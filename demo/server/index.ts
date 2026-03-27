@@ -2,8 +2,125 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { fetchQuote, fetchHistory, fetchBatchQuotes, QuoteData } from './marketData.js';
+import { fetchQuote, fetchHistory, fetchBatchQuotes, QuoteData, OhlcvBar } from './marketData.js';
 import { PaperTradingEngine } from './paperTrading.js';
+
+// ── Backtest engine (mirrors quant-backtest Rust logic) ───────────────────────
+
+const TRADING_DAYS_PER_YEAR = 252;
+
+interface BacktestResult {
+  symbol: string;
+  range: string;
+  bars: number;
+  equityCurve: Array<{ time: number; value: number }>;
+  drawdownCurve: Array<{ time: number; value: number }>;
+  sharpeRatio: number;
+  maxDrawdown: number;
+  cagr: number;
+  winRate: number;
+  profitFactor: number;
+  totalReturn: number;
+  tradeCount: number;
+}
+
+function computeBacktest(
+  bars: OhlcvBar[],
+  signal: number,
+  commissionPct: number,
+  initialCapital: number,
+  range: string,
+  symbol: string,
+): BacktestResult {
+  const n = bars.length;
+  const closes = bars.map((b) => b.close);
+
+  // Daily returns (pct_change; first bar = 0)
+  const dailyReturns = closes.map((c, i) =>
+    i === 0 ? 0 : (c - closes[i - 1]) / closes[i - 1],
+  );
+
+  // Positions = signal shifted 1 bar forward (no lookahead)
+  const positions = closes.map((_, i) => (i === 0 ? 0 : signal));
+
+  // Net returns = gross - commission on position change
+  const netReturns: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const gross = positions[i] * dailyReturns[i];
+    const delta = i === 0 ? 0 : Math.abs(positions[i] - positions[i - 1]);
+    netReturns.push(gross - delta * commissionPct);
+  }
+
+  // Equity curve
+  let equity = initialCapital;
+  const equityCurve = bars.map((b, i) => {
+    equity *= 1 + netReturns[i];
+    return { time: b.time, value: equity };
+  });
+
+  // Drawdown curve (non-positive fraction of running peak)
+  let peak = initialCapital;
+  const drawdownCurve = equityCurve.map((pt) => {
+    if (pt.value > peak) peak = pt.value;
+    const dd = peak > 0 ? (pt.value - peak) / peak : 0;
+    return { time: pt.time, value: dd };
+  });
+
+  const maxDrawdown = Math.max(...drawdownCurve.map((d) => Math.abs(d.value)));
+  const totalReturn = (equityCurve[n - 1].value - initialCapital) / initialCapital;
+  const years = n / TRADING_DAYS_PER_YEAR;
+  const cagr = years > 0 ? Math.pow(1 + totalReturn, 1 / years) - 1 : 0;
+
+  // Sharpe (annualised, rf=0, ddof=1)
+  const mean = netReturns.reduce((s, r) => s + r, 0) / n;
+  const variance =
+    netReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / Math.max(n - 1, 1);
+  const sharpeRatio =
+    variance > 0 ? (mean / Math.sqrt(variance)) * Math.sqrt(TRADING_DAYS_PER_YEAR) : 0;
+
+  // Round-trip trades: contiguous non-zero position blocks
+  let inTrade = false;
+  let tradeEntry = 0;
+  const trades: Array<{ ret: number }> = [];
+  for (let i = 0; i < n; i++) {
+    const pos = positions[i];
+    if (!inTrade && pos !== 0) {
+      inTrade = true;
+      tradeEntry = i;
+    } else if (inTrade && pos === 0) {
+      const tradeReturns = netReturns.slice(tradeEntry, i);
+      const tradeRet = tradeReturns.reduce((acc, r) => acc * (1 + r), 1) - 1;
+      trades.push({ ret: tradeRet });
+      inTrade = false;
+    }
+  }
+  if (inTrade) {
+    const tradeReturns = netReturns.slice(tradeEntry);
+    trades.push({ ret: tradeReturns.reduce((acc, r) => acc * (1 + r), 1) - 1 });
+  }
+
+  const wins = trades.filter((t) => t.ret > 0);
+  const losses = trades.filter((t) => t.ret <= 0);
+  const grossProfit = wins.reduce((s, t) => s + t.ret, 0);
+  const grossLoss = Math.abs(losses.reduce((s, t) => s + t.ret, 0));
+  const winRate = trades.length > 0 ? wins.length / trades.length : 0;
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : Infinity;
+
+  return {
+    symbol,
+    range,
+    bars: n,
+    equityCurve,
+    drawdownCurve,
+    sharpeRatio,
+    maxDrawdown,
+    cagr,
+    winRate,
+    profitFactor: isFinite(profitFactor) ? profitFactor : 999,
+    totalReturn,
+    tradeCount: trades.length,
+  };
+}
 
 const app = express();
 const PORT = 3001;
@@ -98,6 +215,22 @@ app.delete('/api/orders/:id', (req, res) => {
   const ok = engine.cancelOrder(req.params.id);
   if (!ok) return res.status(404).json({ error: 'Order not found or not cancellable' });
   res.json({ cancelled: true });
+});
+
+app.get('/api/backtest/:symbol', async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  const range = (req.query.range as string) || '5y';
+  const signal = parseFloat((req.query.signal as string) || '1');
+  const commission = parseFloat((req.query.commission as string) || '0.001');
+  const initialCapital = parseFloat((req.query.initialCapital as string) || '1000000');
+
+  const bars = await fetchHistory(symbol, range, '1d');
+  if (bars.length < 2) {
+    return res.status(422).json({ error: `Insufficient data for ${symbol} (${bars.length} bars)` });
+  }
+
+  const result = computeBacktest(bars, signal, commission, initialCapital, range, symbol);
+  res.json(result);
 });
 
 // --- Server + WebSocket ---
