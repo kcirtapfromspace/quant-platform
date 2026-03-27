@@ -2,7 +2,14 @@
 name = "quant-signals"
 version = "0.1.0"
 edition = "2021"
-description = "Pure-Rust signal framework (stub — full port in Phase 4)"
+description = "Pure-Rust signal framework: momentum, mean-reversion, trend-following"
 
 [lib]
 crate-type = ["rlib"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "signal_kernels"
+harness = false

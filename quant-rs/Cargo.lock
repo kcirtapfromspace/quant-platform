@@ -465,6 +465,9 @@ dependencies = [
 [[package]]
 name = "quant-signals"
 version = "0.1.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "quote"

@@ -456,3 +456,240 @@ class TestNumericalParity:
             _py_volume_ratio(volumes, 20),
             label="volume_ratio_20",
         )
+
+
+# ─── Pure-Python reference implementations for signal kernels ─────────────────
+# Mirror the Rust algorithms exactly for parity validation.
+
+
+def _last_valid_py(values: list[float]) -> float | None:
+    for v in reversed(values):
+        if not math.isnan(v) and not math.isinf(v):
+            return v
+    return None
+
+
+def _py_momentum_signal(
+    rsi_values: list[float],
+    returns: list[float],
+    lookback: int = 5,
+    return_scale: float = 0.05,
+) -> tuple[float, float, float]:
+    rsi_val = _last_valid_py(rsi_values)
+    if rsi_val is None:
+        return (0.0, 0.0, 0.0)
+
+    score = max(-1.0, min(1.0, (rsi_val - 50.0) / 20.0))
+
+    valid_rets = [r for r in returns if not math.isnan(r) and not math.isinf(r)]
+    if len(valid_rets) >= lookback:
+        recent_abs = sum(abs(r) for r in valid_rets[-lookback:]) / lookback
+        confidence = max(0.0, min(1.0, recent_abs / return_scale))
+    else:
+        confidence = 0.5
+
+    target = max(-1.0, min(1.0, score * confidence))
+    return (score, confidence, target)
+
+
+def _py_mean_reversion_signal(
+    bb_mid: list[float],
+    bb_upper: list[float],
+    bb_lower: list[float],
+    returns: list[float],
+    num_std: float = 2.0,
+) -> tuple[float, float, float]:
+    mid = _last_valid_py(bb_mid)
+    upper = _last_valid_py(bb_upper)
+    lower = _last_valid_py(bb_lower)
+    if mid is None or upper is None or lower is None:
+        return (0.0, 0.0, 0.0)
+
+    band_width = upper - lower
+    if band_width < 1e-12:
+        return (0.0, 0.0, 0.0)
+
+    last_ret = _last_valid_py(returns)
+    if last_ret is None:
+        last_ret = 0.0
+
+    price_approx = mid * (1.0 + last_ret)
+    half_band = band_width / 2.0
+    z = (price_approx - mid) / half_band if half_band > 0.0 else 0.0
+
+    score = max(-1.0, min(1.0, -z / num_std))
+    confidence = max(0.0, min(1.0, abs(z) / num_std))
+    target = max(-1.0, min(1.0, score * confidence))
+    return (score, confidence, target)
+
+
+def _py_trend_following_signal(
+    macd_hist: list[float],
+    fast_ma: list[float],
+    slow_ma: list[float],
+) -> tuple[float, float, float]:
+    hist_valid = [h for h in macd_hist if not math.isnan(h) and not math.isinf(h)]
+    fast_val = _last_valid_py(fast_ma)
+    slow_val = _last_valid_py(slow_ma)
+
+    if not hist_valid or fast_val is None or slow_val is None:
+        return (0.0, 0.0, 0.0)
+
+    last_hist = hist_valid[-1]
+
+    if len(hist_valid) >= 10:
+        window = min(20, len(hist_valid))
+        w_slice = hist_valid[-window:]
+        mean = sum(w_slice) / window
+        var = sum((x - mean) ** 2 for x in w_slice) / (window - 1)
+        hist_std = math.sqrt(var)
+    else:
+        mean_abs = sum(abs(h) for h in hist_valid) / len(hist_valid)
+        hist_std = mean_abs if mean_abs != 0.0 else 1.0
+
+    if hist_std < 1e-12:
+        hist_std = 1.0
+
+    score = max(-1.0, min(1.0, last_hist / hist_std))
+    sma_bullish = fast_val > slow_val
+    hist_bullish = last_hist > 0.0
+    aligned = sma_bullish == hist_bullish
+    base_confidence = abs(score)
+    confidence = max(0.0, min(1.0, base_confidence * (1.2 if aligned else 0.6)))
+    target = max(-1.0, min(1.0, score * confidence))
+    return (score, confidence, target)
+
+
+# ─── quant_rs.signals — parity tests ─────────────────────────────────────────
+
+
+class TestSignals:
+    """Validate Rust signal kernels against pure-Python reference implementations.
+
+    Tolerance: 1e-9 (relative), matching the feature/risk parity tests.
+    """
+
+    @pytest.fixture
+    def closes(self):
+        return _spy_closes(100, seed=42)
+
+    def _assert_signal_parity(
+        self,
+        rust: tuple[float, float, float],
+        py: tuple[float, float, float],
+        label: str = "",
+        tol: float = 1e-9,
+    ) -> None:
+        labels = ["score", "confidence", "target_position"]
+        for r, p, name in zip(rust, py, labels):
+            assert abs(r - p) <= tol * max(abs(p), 1.0), (
+                f"{label}.{name}: Rust={r!r} vs Python={p!r} (diff={abs(r - p)!r})"
+            )
+
+    # ── momentum_signal ───────────────────────────────────────────────────
+
+    def test_momentum_signal_parity(self, closes):
+        rsi = quant_rs.features.rsi(closes, 14)
+        rets = quant_rs.features.returns(closes)
+        rust = quant_rs.signals.momentum_signal(rsi, rets)
+        py = _py_momentum_signal(rsi, rets)
+        self._assert_signal_parity(rust, py, "momentum_signal")
+
+    def test_momentum_signal_no_rsi_returns_zero(self):
+        rsi = [math.nan] * 20
+        rets = [0.01] * 20
+        rust = quant_rs.signals.momentum_signal(rsi, rets)
+        assert rust == (0.0, 0.0, 0.0)
+
+    def test_momentum_signal_few_returns_half_confidence(self):
+        rsi = [60.0]
+        rets = [0.01, 0.02]  # < lookback=5
+        _, confidence, _ = quant_rs.signals.momentum_signal(rsi, rets)
+        assert abs(confidence - 0.5) < 1e-12
+
+    def test_momentum_signal_output_in_range(self, closes):
+        rsi = quant_rs.features.rsi(closes, 14)
+        rets = quant_rs.features.returns(closes)
+        score, confidence, target = quant_rs.signals.momentum_signal(rsi, rets)
+        assert -1.0 <= score <= 1.0
+        assert 0.0 <= confidence <= 1.0
+        assert -1.0 <= target <= 1.0
+
+    def test_momentum_signal_custom_params_parity(self, closes):
+        rsi = quant_rs.features.rsi(closes, 14)
+        rets = quant_rs.features.returns(closes)
+        rust = quant_rs.signals.momentum_signal(rsi, rets, lookback=10, return_scale=0.02)
+        py = _py_momentum_signal(rsi, rets, lookback=10, return_scale=0.02)
+        self._assert_signal_parity(rust, py, "momentum_signal_custom")
+
+    # ── mean_reversion_signal ─────────────────────────────────────────────
+
+    def test_mean_reversion_signal_parity(self, closes):
+        bb_mid = quant_rs.features.bb_mid(closes, 20)
+        bb_upper = quant_rs.features.bb_upper(closes, 20, 2.0)
+        bb_lower = quant_rs.features.bb_lower(closes, 20, 2.0)
+        rets = quant_rs.features.returns(closes)
+        rust = quant_rs.signals.mean_reversion_signal(bb_mid, bb_upper, bb_lower, rets)
+        py = _py_mean_reversion_signal(bb_mid, bb_upper, bb_lower, rets)
+        self._assert_signal_parity(rust, py, "mean_reversion_signal")
+
+    def test_mean_reversion_no_bands_returns_zero(self):
+        nans = [math.nan]
+        rust = quant_rs.signals.mean_reversion_signal(nans, nans, nans, [0.0])
+        assert rust == (0.0, 0.0, 0.0)
+
+    def test_mean_reversion_zero_bandwidth_returns_zero(self):
+        rust = quant_rs.signals.mean_reversion_signal([100.0], [100.0], [100.0], [0.0])
+        assert rust == (0.0, 0.0, 0.0)
+
+    def test_mean_reversion_at_mid_returns_neutral(self):
+        # last_ret=0 → price_approx=mid → z=0 → score=0
+        score, confidence, _ = quant_rs.signals.mean_reversion_signal(
+            [100.0], [102.0], [98.0], [0.0]
+        )
+        assert abs(score) < 1e-12
+        assert abs(confidence) < 1e-12
+
+    def test_mean_reversion_output_in_range(self, closes):
+        bb_mid = quant_rs.features.bb_mid(closes, 20)
+        bb_upper = quant_rs.features.bb_upper(closes, 20, 2.0)
+        bb_lower = quant_rs.features.bb_lower(closes, 20, 2.0)
+        rets = quant_rs.features.returns(closes)
+        score, confidence, target = quant_rs.signals.mean_reversion_signal(
+            bb_mid, bb_upper, bb_lower, rets
+        )
+        assert -1.0 <= score <= 1.0
+        assert 0.0 <= confidence <= 1.0
+        assert -1.0 <= target <= 1.0
+
+    # ── trend_following_signal ────────────────────────────────────────────
+
+    def test_trend_following_signal_parity(self, closes):
+        hist = quant_rs.features.macd_histogram(closes, 12, 26, 9)
+        fast_ma = quant_rs.features.rolling_mean(closes, 20)
+        slow_ma = quant_rs.features.rolling_mean(closes, 50)
+        rust = quant_rs.signals.trend_following_signal(hist, fast_ma, slow_ma)
+        py = _py_trend_following_signal(hist, fast_ma, slow_ma)
+        self._assert_signal_parity(rust, py, "trend_following_signal")
+
+    def test_trend_following_no_hist_returns_zero(self):
+        rust = quant_rs.signals.trend_following_signal(
+            [math.nan] * 10, [100.0], [99.0]
+        )
+        assert rust == (0.0, 0.0, 0.0)
+
+    def test_trend_following_positive_hist_bullish(self):
+        hist = [float(i + 1) * 0.1 for i in range(20)]
+        score, _, _ = quant_rs.signals.trend_following_signal(hist, [105.0], [100.0])
+        assert score > 0.0
+
+    def test_trend_following_output_in_range(self, closes):
+        hist = quant_rs.features.macd_histogram(closes, 12, 26, 9)
+        fast_ma = quant_rs.features.rolling_mean(closes, 20)
+        slow_ma = quant_rs.features.rolling_mean(closes, 50)
+        score, confidence, target = quant_rs.signals.trend_following_signal(
+            hist, fast_ma, slow_ma
+        )
+        assert -1.0 <= score <= 1.0
+        assert 0.0 <= confidence <= 1.0
+        assert -1.0 <= target <= 1.0
