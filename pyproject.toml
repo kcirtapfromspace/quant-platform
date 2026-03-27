@@ -18,6 +18,14 @@ dependencies = [
     "click>=8.1.7",
     "loguru>=0.7.2",
     "pyarrow>=14.0.0",
+    # Database / migrations
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "psycopg2-binary>=2.9.9",
+    # Cache
+    "redis>=5.0.0",
+    # Object storage (MinIO / S3-compatible)
+    "boto3>=1.34.0",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +34,13 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
     "freezegun>=1.4.0",
+    "ruff>=0.4.0",
+    "mypy>=1.9.0",
+    "pre-commit>=3.7.0",
+    "types-redis>=4.6.0",
+    "types-requests>=2.31.0",
+    "pandas-stubs>=2.0.0",
+    "boto3-stubs[s3]>=1.34.0",
 ]
 execution = [
     "alpaca-py>=0.8.0",
@@ -43,5 +58,88 @@ quant-ingest = "quant.scripts.ingest_eod:main"
 where = ["."]
 include = ["quant*"]
 
+# ---------------------------------------------------------------------------
+# uv configuration
+# ---------------------------------------------------------------------------
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "freezegun>=1.4.0",
+    "ruff>=0.4.0",
+    "mypy>=1.9.0",
+    "pre-commit>=3.7.0",
+    "types-redis>=4.6.0",
+    "types-requests>=2.31.0",
+    "pandas-stubs>=2.0.0",
+    "boto3-stubs[s3]>=1.34.0",
+]
+
+# ---------------------------------------------------------------------------
+# ruff — lint + format
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["quant"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function call in default arg
+    "N812",  # lowercase imported as non-lowercase (common for pandas as pd)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["quant"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_reexport = true
+namespace_packages = true
+explicit_package_bases = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["yfinance.*", "duckdb.*", "apscheduler.*", "ccxt.*", "ib_insync.*", "alpaca.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["quant/tests"]
+asyncio_mode = "auto"
+addopts = "--tb=short -q"
+
+[tool.coverage.run]
+source = ["quant"]
+omit = ["quant/tests/*", "quant/scripts/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
