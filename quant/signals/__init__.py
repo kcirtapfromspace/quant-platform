@@ -17,6 +17,12 @@ from quant.signals.cross_sectional import (
     winsorize,
     z_score_normalize,
 )
+from quant.signals.decay import (
+    DecayConfig,
+    DecayResult,
+    HorizonIC,
+    SignalDecayAnalyzer,
+)
 from quant.signals.factors import BreakoutSignal, ReturnQualitySignal, VolatilitySignal
 from quant.signals.regime import (
     CorrelationRegime,
@@ -39,10 +45,13 @@ __all__ = [
     "BaseSignal",
     "BreakoutSignal",
     "CorrelationRegime",
+    "DecayConfig",
+    "DecayResult",
     "CrossSectionalMeanReversion",
     "CrossSectionalMomentum",
     "CrossSectionalSignal",
     "CrossSectionalVolatility",
+    "HorizonIC",
     "MarketRegime",
     "MeanReversionSignal",
     "MomentumSignal",
@@ -55,6 +64,7 @@ __all__ = [
     "RegimeState",
     "RegimeWeightAdapter",
     "ReturnQualitySignal",
+    "SignalDecayAnalyzer",
     "SignalOutput",
     "SignalRegistry",
     "TrendFollowingSignal",
