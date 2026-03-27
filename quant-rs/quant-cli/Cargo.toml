@@ -1,0 +1,24 @@
+[package]
+name = "quant-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Quant Infrastructure CLI — replaces quant-ingest and quant-run Python scripts"
+
+[[bin]]
+name = "quant"
+path = "src/main.rs"
+
+[dependencies]
+quant-data = { path = "../quant-data" }
+quant-oms = { path = "../quant-oms" }
+quant-portfolio = { path = "../quant-portfolio" }
+quant-risk = { path = "../quant-risk" }
+quant-signals = { path = "../quant-signals" }
+quant-backtest = { path = "../quant-backtest" }
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"

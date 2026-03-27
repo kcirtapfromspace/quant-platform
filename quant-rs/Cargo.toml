@@ -7,6 +7,8 @@ members = [
     "quant-backtest",
     "quant-oms",
     "quant-portfolio",
+    "quant-data",
+    "quant-cli",
 ]
 
 [package]
