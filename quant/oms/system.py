@@ -6,13 +6,14 @@ position state. Thread-safe for concurrent fill callbacks.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional
 
 from loguru import logger
 
 from quant.oms.broker import BrokerAdapter, BrokerError
 from quant.oms.models import Fill, Order, OrderStatus, Position
+from quant.oms.persistence import SQLiteStateStore
 
 
 def _utcnow() -> datetime:
@@ -46,24 +47,29 @@ class OrderManagementSystem:
         oms.stop()
     """
 
-    def __init__(self, broker: BrokerAdapter) -> None:
+    def __init__(
+        self,
+        broker: BrokerAdapter,
+        state_store: SQLiteStateStore | None = None,
+    ) -> None:
         self._broker = broker
+        self._store = state_store
         self._lock = threading.Lock()
 
         # Order book: oms_order_id → Order
-        self._orders: Dict[str, Order] = {}
+        self._orders: dict[str, Order] = {}
         # broker_order_id → oms_order_id (reverse lookup)
-        self._broker_id_map: Dict[str, str] = {}
+        self._broker_id_map: dict[str, str] = {}
 
         # Position map: symbol → Position
-        self._positions: Dict[str, Position] = {}
+        self._positions: dict[str, Position] = {}
 
         # Fills that arrived before their broker_id was registered (e.g. synchronous
         # paper fills) are buffered here until the mapping is established.
-        self._pending_fills: Dict[str, List[Fill]] = {}
+        self._pending_fills: dict[str, list[Fill]] = {}
 
         # Optional downstream fill hooks (e.g. strategy callbacks)
-        self._fill_hooks: List[Callable[[Fill], None]] = []
+        self._fill_hooks: list[Callable[[Fill], None]] = []
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -78,12 +84,59 @@ class OrderManagementSystem:
         self._broker.disconnect()
         logger.info("OMS stopped")
 
-    def __enter__(self) -> "OrderManagementSystem":
+    def __enter__(self) -> OrderManagementSystem:
         self.start()
         return self
 
     def __exit__(self, *_: object) -> None:
         self.stop()
+
+    # ── State recovery ─────────────────────────────────────────────────────
+
+    def restore_state(self) -> None:
+        """Reload orders, positions, and broker-ID map from the state store.
+
+        Call this once after construction (and before ``start()``) to recover
+        state from a previous run.  If no state store is configured this is a
+        no-op.
+        """
+        if self._store is None:
+            return
+
+        with self._lock:
+            # Positions
+            self._positions = self._store.load_positions()
+            logger.info(
+                "OMS: restored {} positions from state store",
+                len(self._positions),
+            )
+
+            # Orders (all persisted, including terminal — needed for audit)
+            orders = self._store.load_orders()
+            for order in orders:
+                self._orders[order.id] = order
+                if order.broker_order_id is not None:
+                    self._broker_id_map[order.broker_order_id] = order.id
+            logger.info(
+                "OMS: restored {} orders ({} active) from state store",
+                len(orders),
+                sum(1 for o in orders if o.is_active),
+            )
+
+    def save_snapshot(self, cash: float, peak_portfolio_value: float) -> None:
+        """Persist a portfolio state snapshot for circuit-breaker recovery.
+
+        Should be called periodically (e.g. after each runner cycle) by the
+        service layer.
+        """
+        if self._store is not None:
+            self._store.save_snapshot(cash, peak_portfolio_value)
+
+    def load_latest_snapshot(self) -> dict | None:
+        """Load the most recent portfolio snapshot, or None."""
+        if self._store is None:
+            return None
+        return self._store.load_latest_snapshot()
 
     # ── Order submission ──────────────────────────────────────────────────
 
@@ -107,6 +160,7 @@ class OrderManagementSystem:
 
         with self._lock:
             self._orders[order.id] = order
+        self._persist_order(order)
 
         try:
             broker_id = self._broker.submit_order(order)
@@ -114,6 +168,7 @@ class OrderManagementSystem:
             with self._lock:
                 order.status = OrderStatus.REJECTED
                 order.updated_at = _utcnow()
+            self._persist_order(order)
             logger.error("OMS: order {} rejected by broker", order.id)
             raise
 
@@ -128,8 +183,11 @@ class OrderManagementSystem:
             for buffered_fill in buffered:
                 self._apply_fill_to_order(order, buffered_fill)
                 self._apply_fill_to_position(buffered_fill)
+        self._persist_order(order)
 
         for buffered_fill in buffered:
+            self._persist_fill(buffered_fill)
+            self._persist_position_for(buffered_fill.symbol)
             for hook in self._fill_hooks:
                 try:
                     hook(buffered_fill)
@@ -180,6 +238,7 @@ class OrderManagementSystem:
             with self._lock:
                 order.status = OrderStatus.CANCELLED
                 order.updated_at = _utcnow()
+            self._persist_order(order)
             logger.info("OMS: order {} cancelled", order_id)
         return accepted
 
@@ -207,6 +266,11 @@ class OrderManagementSystem:
                 # Buffer the fill so submit_order can drain it after registration.
                 self._pending_fills.setdefault(fill.broker_order_id, []).append(fill)
                 return
+
+        self._persist_fill(fill)
+        if order is not None:
+            self._persist_order(order)
+        self._persist_position_for(fill.symbol)
 
         logger.info(
             "OMS: fill — {} {} qty={:.4f} @ {:.4f}",
@@ -250,7 +314,7 @@ class OrderManagementSystem:
 
     # ── Queries ───────────────────────────────────────────────────────────
 
-    def get_order(self, order_id: str) -> Optional[Order]:
+    def get_order(self, order_id: str) -> Order | None:
         """Return the OMS order record by internal ID, or None."""
         with self._lock:
             return self._orders.get(order_id)
@@ -260,7 +324,7 @@ class OrderManagementSystem:
         with self._lock:
             return [o for o in self._orders.values() if o.is_active]
 
-    def get_position(self, symbol: str) -> Optional[Position]:
+    def get_position(self, symbol: str) -> Position | None:
         """Return the current OMS-tracked position for *symbol*, or None."""
         with self._lock:
             return self._positions.get(symbol)
@@ -287,3 +351,23 @@ class OrderManagementSystem:
         Exceptions inside hooks are caught and logged without stopping others.
         """
         self._fill_hooks.append(hook)
+
+    # ── Persistence helpers ────────────────────────────────────────────────
+
+    def _persist_order(self, order: Order) -> None:
+        if self._store is not None:
+            self._store.save_order(order)
+
+    def _persist_fill(self, fill: Fill) -> None:
+        if self._store is not None:
+            self._store.save_fill(fill)
+
+    def _persist_position_for(self, symbol: str) -> None:
+        if self._store is None:
+            return
+        with self._lock:
+            position = self._positions.get(symbol)
+        if position is not None:
+            self._store.save_position(position)
+        else:
+            self._store.delete_position(symbol)
