@@ -7,32 +7,23 @@ Scoring convention:
   +1.0 = maximum long
   -1.0 = maximum short
    0.0 = flat / no view
+
+Signal computation delegates to ``quant_rs.signals`` Rust kernels.
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime
-from typing import TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
+
+import quant_rs as _qrs
 
 from quant.signals.base import BaseSignal, SignalOutput
 
-if TYPE_CHECKING:
-    pass  # pd.Series imported at runtime below
 
-
-def _clamp(value: float, lo: float = -1.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, value))
-
-
-def _last_valid(series: pd.Series) -> float | None:
-    """Return the last non-NaN value or None."""
-    valid = series.dropna()
-    if valid.empty:
-        return None
-    return float(valid.iloc[-1])
+def _to_list(series: pd.Series) -> list[float]:
+    """Convert a pd.Series to a list of floats, replacing NaN with float('nan')."""
+    return [float(x) for x in series]
 
 
 # ---------------------------------------------------------------------------
@@ -80,39 +71,24 @@ class MomentumSignal(BaseSignal):
         features: dict[str, pd.Series],
         timestamp: datetime,
     ) -> SignalOutput:
-        rsi_val = _last_valid(features[f"rsi_{self._rsi_period}"])
-        ret_series = features["returns"].dropna()
+        rsi_values = _to_list(features[f"rsi_{self._rsi_period}"])
+        returns = _to_list(features["returns"])
 
-        if rsi_val is None:
-            return SignalOutput(
-                symbol=symbol,
-                timestamp=timestamp,
-                score=0.0,
-                confidence=0.0,
-                target_position=0.0,
-                metadata={"reason": "insufficient data"},
-            )
+        score, confidence, target_position = _qrs.signals.momentum_signal(
+            rsi_values, returns, self._lookback, self._return_scale
+        )
 
-        # Score: linearly map RSI → [-1, 1] with midpoint at 50
-        # RSI=30 → -1, RSI=50 → 0, RSI=70 → +1
-        score = _clamp((rsi_val - 50.0) / 20.0)
-
-        # Confidence: magnitude of recent returns
-        if len(ret_series) >= self._lookback:
-            recent_abs_ret = float(ret_series.iloc[-self._lookback:].abs().mean())
-            confidence = _clamp(recent_abs_ret / self._return_scale, 0.0, 1.0)
-        else:
-            confidence = 0.5
-
-        target_position = _clamp(score * confidence)
-
+        rsi_last = next(
+            (v for v in reversed(rsi_values) if v == v),  # last non-NaN
+            None,
+        )
         return SignalOutput(
             symbol=symbol,
             timestamp=timestamp,
             score=score,
             confidence=confidence,
             target_position=target_position,
-            metadata={"rsi": rsi_val},
+            metadata={"rsi": rsi_last},
         )
 
 
@@ -160,57 +136,19 @@ class MeanReversionSignal(BaseSignal):
         features: dict[str, pd.Series],
         timestamp: datetime,
     ) -> SignalOutput:
-        mid = _last_valid(features[f"bb_mid_{self._bb_period}"])
-        upper = _last_valid(features[f"bb_upper_{self._bb_period}"])
-        lower = _last_valid(features[f"bb_lower_{self._bb_period}"])
-        bw = _last_valid(features[f"bb_bandwidth_{self._bb_period}"])
+        bb_mid = _to_list(features[f"bb_mid_{self._bb_period}"])
+        bb_upper = _to_list(features[f"bb_upper_{self._bb_period}"])
+        bb_lower = _to_list(features[f"bb_lower_{self._bb_period}"])
+        returns = _to_list(features["returns"])
 
-        # Need actual close price from returns series index
-        ret_series = features["returns"]
+        score, confidence, target_position = _qrs.signals.mean_reversion_signal(
+            bb_mid, bb_upper, bb_lower, returns, self._num_std
+        )
 
-        if mid is None or upper is None or lower is None:
-            return SignalOutput(
-                symbol=symbol,
-                timestamp=timestamp,
-                score=0.0,
-                confidence=0.0,
-                target_position=0.0,
-                metadata={"reason": "insufficient data"},
-            )
-
-        band_width = upper - lower
-        if band_width < 1e-12:
-            return SignalOutput(
-                symbol=symbol,
-                timestamp=timestamp,
-                score=0.0,
-                confidence=0.0,
-                target_position=0.0,
-                metadata={"reason": "zero bandwidth"},
-            )
-
-        # Estimate current price from mid and returns
-        # (We can't directly access close here without the raw df, so we use
-        # mid as a reasonable proxy for normalisation)
-        # score: +1 when at lower band, -1 when at upper band
-        # Normalised deviation: (price - mid) / (band_width / 2)
-        # We approximate "price ≈ mid * (1 + last_return)" for the deviation sign
-        last_ret = _last_valid(ret_series)
-        if last_ret is None:
-            last_ret = 0.0
-
-        # Approximate z-score: how many half-bandwidths from the mid
-        price_approx = mid * (1.0 + last_ret)
-        half_band = band_width / 2.0
-        z = (price_approx - mid) / half_band if half_band > 0 else 0.0
-
-        # Mean-reversion: negative of z (high price → sell, low price → buy)
-        score = _clamp(-z / self._num_std)
-
-        # Confidence: normalised bandwidth (thin bands → less reliable)
-        confidence = _clamp(abs(z) / self._num_std, 0.0, 1.0)
-
-        target_position = _clamp(score * confidence)
+        mid_last = next((v for v in reversed(bb_mid) if v == v), None)
+        upper_last = next((v for v in reversed(bb_upper) if v == v), None)
+        lower_last = next((v for v in reversed(bb_lower) if v == v), None)
+        band_width = (upper_last - lower_last) if upper_last is not None and lower_last is not None else None
 
         return SignalOutput(
             symbol=symbol,
@@ -218,7 +156,7 @@ class MeanReversionSignal(BaseSignal):
             score=score,
             confidence=confidence,
             target_position=target_position,
-            metadata={"z_score": z, "band_width": band_width, "mid": mid},
+            metadata={"mid": mid_last, "band_width": band_width},
         )
 
 
@@ -266,42 +204,17 @@ class TrendFollowingSignal(BaseSignal):
         features: dict[str, pd.Series],
         timestamp: datetime,
     ) -> SignalOutput:
-        hist_series = features["macd_hist_12_26_9"].dropna()
-        fast_ma = _last_valid(features[f"rolling_mean_{self._fast_ma}"])
-        slow_ma = _last_valid(features[f"rolling_mean_{self._slow_ma}"])
+        macd_hist = _to_list(features["macd_hist_12_26_9"])
+        fast_ma = _to_list(features[f"rolling_mean_{self._fast_ma}"])
+        slow_ma = _to_list(features[f"rolling_mean_{self._slow_ma}"])
 
-        if hist_series.empty or fast_ma is None or slow_ma is None:
-            return SignalOutput(
-                symbol=symbol,
-                timestamp=timestamp,
-                score=0.0,
-                confidence=0.0,
-                target_position=0.0,
-                metadata={"reason": "insufficient data"},
-            )
+        score, confidence, target_position = _qrs.signals.trend_following_signal(
+            macd_hist, fast_ma, slow_ma
+        )
 
-        last_hist = float(hist_series.iloc[-1])
-
-        # Normalise histogram by its rolling std to get a standardised score
-        if len(hist_series) >= 10:
-            hist_std = float(hist_series.rolling(min(20, len(hist_series))).std().iloc[-1])
-        else:
-            hist_std = float(hist_series.abs().mean()) or 1.0
-
-        if hist_std < 1e-12:
-            hist_std = 1.0
-
-        score = _clamp(last_hist / hist_std)
-
-        # Confidence: SMA crossover alignment with MACD direction
-        sma_bullish = fast_ma > slow_ma
-        hist_bullish = last_hist > 0.0
-        aligned = sma_bullish == hist_bullish
-
-        base_confidence = abs(score)
-        confidence = _clamp(base_confidence * (1.2 if aligned else 0.6), 0.0, 1.0)
-
-        target_position = _clamp(score * confidence)
+        fast_last = next((v for v in reversed(fast_ma) if v == v), None)
+        slow_last = next((v for v in reversed(slow_ma) if v == v), None)
+        hist_last = next((v for v in reversed(macd_hist) if v == v), None)
 
         return SignalOutput(
             symbol=symbol,
@@ -310,9 +223,8 @@ class TrendFollowingSignal(BaseSignal):
             confidence=confidence,
             target_position=target_position,
             metadata={
-                "macd_hist": last_hist,
-                "sma_fast": fast_ma,
-                "sma_slow": slow_ma,
-                "sma_aligned": aligned,
+                "macd_hist": hist_last,
+                "sma_fast": fast_last,
+                "sma_slow": slow_last,
             },
         )

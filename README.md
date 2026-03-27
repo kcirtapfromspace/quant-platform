@@ -12,9 +12,16 @@ quant/
 ├── signals/           # signal registry and strategy framework
 ├── risk/              # position sizing, exposure limits, circuit breaker
 ├── oms/               # order management system + broker adapters
-├── backtest/          # event-driven backtesting engine
+├── backtest/          # vectorised backtesting engine (Rust core)
 ├── monitoring/        # Prometheus metrics instrumentation
 └── db/                # SQLAlchemy models + session factory (PostgreSQL)
+
+quant-rs/              # Rust compute kernels (required)
+├── quant-features/    # Technical indicators: RSI, MACD, Bollinger Bands, etc.
+├── quant-risk/        # Position sizing, exposure limits, circuit breaker
+├── quant-signals/     # Momentum, mean-reversion, trend-following kernels
+├── quant-backtest/    # Vectorised backtest loop + performance metrics
+└── src/               # PyO3 extension module (quant_rs Python package)
 ```
 
 Infrastructure:
@@ -32,9 +39,15 @@ Infrastructure:
 | Tool | Minimum version | Install |
 |------|----------------|---------|
 | Python | 3.10 | [python.org](https://python.org) |
+| Rust | 1.78 | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| maturin | latest | `pip install maturin` |
 | uv | latest | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | Docker + Compose | Docker 24 | [docker.com](https://docker.com) |
 | pre-commit | 3.7 | installed via `uv` below |
+
+> **Rust is required.** All hot-path compute (feature indicators, risk kernels,
+> signal scoring, backtest loop) runs in the `quant_rs` extension built from
+> `quant-rs/` via PyO3 + maturin.
 
 ---
 
@@ -50,7 +63,7 @@ cd quant-infrastructure
 cp .env.example .env
 ```
 
-### 2. Install Python dependencies
+### 2. Install Python dependencies and build the Rust extension
 
 ```bash
 # With uv (recommended)
@@ -58,6 +71,14 @@ uv sync --extra dev
 
 # Or with pip
 pip install -e ".[dev]"
+```
+
+Build and install the `quant_rs` Rust extension (required):
+
+```bash
+cd quant-rs
+maturin develop --release
+cd ..
 ```
 
 ### 3. Start the local dev stack
@@ -157,10 +178,11 @@ docker compose up -d
 
 GitHub Actions runs on every push and PR to `main` / `develop`:
 
-1. **Lint** — `ruff check` + `ruff format --check`
-2. **Type Check** — `mypy`
-3. **Tests** — `pytest` with TimescaleDB + Redis service containers
-4. **Docker Build** — validates the image builds cleanly
+1. **Rust** — `cargo fmt --check` + `cargo clippy` + `cargo test` for all Rust crates
+2. **Lint** — `ruff check` + `ruff format --check`
+3. **Type Check** — `mypy`
+4. **Tests** — `maturin develop --release` then `pytest` with TimescaleDB + Redis service containers
+5. **Docker Build** — validates the image builds cleanly (depends on all prior jobs)
 
 See `.github/workflows/ci.yml` for full configuration.
 

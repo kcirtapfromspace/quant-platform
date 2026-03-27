@@ -4,25 +4,26 @@ Design principles
 -----------------
 * **No lookahead bias**: signal at bar *t* (using close prices up to and
   including *t*) is applied to the return from close *t* → close *t+1*.
-  This is enforced by ``signals.shift(1)`` inside the engine — the strategy
-  itself must not peek forward either.
+  This is enforced by the Rust kernel — the strategy itself must not peek
+  forward either.
 * **Realistic fill assumptions**: positions are entered/exited at the next
   close after the signal fires, and a proportional commission is charged on
   every change in position size.
 * **Train / test split**: optionally supply ``train_end_date`` to restrict
   signal generation to the training window while measuring performance only
   on the held-out test window.
-* **Correctness over speed**: vectorised pandas ops — fast enough for years of
-  daily data; no sacrifices to correctness for micro-performance.
+* **Rust core**: the inner loop (equity curve, trade log, metrics) runs in
+  ``quant_rs.backtest.run_backtest`` for maximum throughput.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 
-import numpy as np
 import pandas as pd
 from loguru import logger
+
+import quant_rs as _qrs
 
 from quant.backtest import metrics as m
 from quant.backtest.report import BacktestReport
@@ -52,7 +53,7 @@ class BacktestConfig:
 
 
 class BacktestEngine:
-    """Vectorised single-asset backtesting engine.
+    """Vectorised single-asset backtesting engine backed by Rust kernels.
 
     Usage::
 
@@ -100,10 +101,6 @@ class BacktestEngine:
                 len(train_df),
             )
             train_signals = strategy.generate_signals(train_df)
-            # Extend signals with zeros for the test window (no new signals
-            # after train cutoff — position stays flat unless strategy emits
-            # a signal on last training bar that carries into the test window
-            # via the shift below).
             test_mask = ~train_mask
             test_index = ohlcv[test_mask].index
             test_signals = pd.Series(0.0, index=test_index)
@@ -114,66 +111,76 @@ class BacktestEngine:
 
         raw_signals = raw_signals.reindex(ohlcv.index).fillna(0.0)
 
-        # ── No-lookahead enforcement: shift signals forward by 1 bar ─────
-        # Signal at close of bar t → position held during bar t+1.
-        positions = raw_signals.shift(1).fillna(0.0)
+        # ── Rust core: equity curve + trade log ───────────────────────────
+        result = _qrs.backtest.run_backtest(
+            ohlcv["adj_close"].tolist(),
+            raw_signals.tolist(),
+            config.commission_pct,
+            config.initial_capital,
+        )
 
-        # ── Return computation ────────────────────────────────────────────
-        daily_returns = ohlcv["adj_close"].pct_change().fillna(0.0)
-        gross_returns = positions * daily_returns
-
-        # Transaction cost: commission_pct * |change in position|
-        pos_delta = positions.diff().abs().fillna(0.0)
-        costs = config.commission_pct * pos_delta
-
-        net_returns = gross_returns - costs
-
-        # ── Equity curve ──────────────────────────────────────────────────
-        equity = config.initial_capital * (1.0 + net_returns).cumprod()
-        dd = m.drawdown_series(equity)
+        equity_vals = [pv for pv, _ in result["equity_curve"]]
+        dd_vals = [dd for _, dd in result["equity_curve"]]
 
         equity_curve = pd.DataFrame(
             {
                 "date": ohlcv.index,
-                "portfolio_value": equity.values,
-                "drawdown": dd.values,
+                "portfolio_value": equity_vals,
+                "drawdown": dd_vals,
             }
         )
 
-        # ── Evaluation window ─────────────────────────────────────────────
-        # When a train/test split is configured, report metrics on test only.
-        if config.train_end_date is not None:
-            eval_mask = ohlcv.index.date > config.train_end_date  # type: ignore[union-attr]
-            eval_returns = net_returns[eval_mask]
-            eval_equity = equity[eval_mask]
-            if eval_equity.empty:
-                logger.warning("Test window is empty — falling back to full window")
-                eval_returns = net_returns
-                eval_equity = equity
+        # Build trade log with dates from bar indices
+        records = [
+            {
+                "entry_date": ohlcv.index[entry_idx],
+                "exit_date": ohlcv.index[exit_idx],
+                "direction": direction,
+                "return": ret,
+            }
+            for entry_idx, exit_idx, direction, ret in result["trades"]
+        ]
+        if records:
+            trade_log = pd.DataFrame(records)
         else:
-            eval_returns = net_returns
-            eval_equity = equity
+            trade_log = pd.DataFrame(
+                columns=["entry_date", "exit_date", "direction", "return"]
+            )
 
-        # Re-base equity curve to 1.0 at start of eval window for CAGR/total return
-        first_val = eval_equity.iloc[0] if not eval_equity.empty else 1.0
-        eval_equity_rebased = eval_equity / first_val
-
-        # ── Trade log ─────────────────────────────────────────────────────
-        trade_log = self._build_trade_log(positions, net_returns, ohlcv.index)
-
-        # ── Metrics ───────────────────────────────────────────────────────
+        # ── Evaluation window ─────────────────────────────────────────────
         symbol = str(ohlcv.attrs.get("symbol", "UNKNOWN"))
         start_date = ohlcv.index[0].date() if hasattr(ohlcv.index[0], "date") else ohlcv.index[0]  # type: ignore[union-attr]
         end_date = ohlcv.index[-1].date() if hasattr(ohlcv.index[-1], "date") else ohlcv.index[-1]  # type: ignore[union-attr]
 
-        eval_trade_log = trade_log
-        if config.train_end_date is not None and not trade_log.empty:
-            eval_trade_log = trade_log[
-                pd.to_datetime(trade_log["entry_date"]).dt.date > config.train_end_date
-            ]
+        equity_series = pd.Series(equity_vals, index=ohlcv.index)
 
-        trade_returns = eval_trade_log["return"] if not eval_trade_log.empty else pd.Series([], dtype=float)
+        if config.train_end_date is not None:
+            eval_mask = ohlcv.index.date > config.train_end_date  # type: ignore[union-attr]
+            eval_equity = equity_series[eval_mask]
+            if not trade_log.empty:
+                eval_trade_log = trade_log[
+                    pd.to_datetime(trade_log["entry_date"]).dt.date > config.train_end_date
+                ]
+            else:
+                eval_trade_log = trade_log
 
+            if eval_equity.empty:
+                logger.warning("Test window is empty — falling back to full window")
+                eval_equity = equity_series
+                eval_trade_log = trade_log
+        else:
+            eval_equity = equity_series
+            eval_trade_log = trade_log
+
+        first_val = eval_equity.iloc[0] if not eval_equity.empty else 1.0
+        eval_equity_rebased = eval_equity / first_val
+
+        # Recompute metrics on eval window from rebased equity
+        eval_net_returns = eval_equity_rebased.pct_change().fillna(0.0)
+        trade_returns = (
+            eval_trade_log["return"] if not eval_trade_log.empty
+            else pd.Series([], dtype=float)
+        )
         total_ret = float(eval_equity_rebased.iloc[-1] - 1.0) if not eval_equity_rebased.empty else 0.0
 
         report = BacktestReport(
@@ -182,9 +189,9 @@ class BacktestEngine:
             start_date=start_date,  # type: ignore[arg-type]
             end_date=end_date,  # type: ignore[arg-type]
             train_end_date=config.train_end_date,
-            sharpe_ratio=m.sharpe_ratio(eval_returns),
+            sharpe_ratio=m.sharpe_ratio(eval_net_returns),
             max_drawdown=m.max_drawdown(eval_equity_rebased),
-            cagr=m.cagr(eval_equity_rebased, len(eval_returns)),
+            cagr=m.cagr(eval_equity_rebased, len(eval_net_returns)),
             win_rate=m.win_rate(trade_returns),
             profit_factor=m.profit_factor(trade_returns),
             total_return=total_ret,
@@ -212,75 +219,7 @@ class BacktestEngine:
         if "adj_close" not in ohlcv.columns:
             raise ValueError("ohlcv must contain an 'adj_close' column")
         df = ohlcv.copy()
-        # Normalise index to DatetimeIndex for consistent .date access
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         df = df.sort_index()
         return df
-
-    @staticmethod
-    def _build_trade_log(
-        positions: pd.Series,
-        net_returns: pd.Series,
-        index: pd.DatetimeIndex,
-    ) -> pd.DataFrame:
-        """Identify round-trip trades and compute per-trade returns.
-
-        A trade is defined as a continuous block of non-zero position.  We
-        accumulate returns over the block to get the round-trip P&L.
-        """
-        records: list[dict] = []
-        in_trade = False
-        entry_date = None
-        direction = None
-        trade_returns_acc: list[float] = []
-
-        for i, (pos, ret) in enumerate(zip(positions, net_returns)):
-            dt = index[i]
-            if not in_trade:
-                if pos != 0:
-                    in_trade = True
-                    entry_date = dt
-                    direction = "long" if pos > 0 else "short"
-                    trade_returns_acc = [ret]
-            else:
-                # Still in a trade
-                if pos != 0:
-                    trade_returns_acc.append(ret)
-                    if pos > 0:
-                        direction = "long"
-                    elif pos < 0:
-                        direction = "short"
-                else:
-                    # Position closed
-                    trade_ret = float(np.prod([1 + r for r in trade_returns_acc]) - 1)
-                    records.append(
-                        {
-                            "entry_date": entry_date,
-                            "exit_date": index[i - 1],
-                            "direction": direction,
-                            "return": trade_ret,
-                        }
-                    )
-                    in_trade = False
-                    entry_date = None
-                    direction = None
-                    trade_returns_acc = []
-
-        # Close any open trade at end of data
-        if in_trade and entry_date is not None and trade_returns_acc:
-            trade_ret = float(np.prod([1 + r for r in trade_returns_acc]) - 1)
-            records.append(
-                {
-                    "entry_date": entry_date,
-                    "exit_date": index[-1],
-                    "direction": direction,
-                    "return": trade_ret,
-                }
-            )
-
-        if records:
-            return pd.DataFrame(records)
-        return pd.DataFrame(
-            columns=["entry_date", "exit_date", "direction", "return"]
-        )

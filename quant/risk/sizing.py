@@ -1,9 +1,13 @@
-"""Position sizing models: Kelly criterion, fixed-fraction, volatility-targeting."""
+"""Position sizing models: Kelly criterion, fixed-fraction, volatility-targeting.
+
+Hot-path computations are delegated to ``quant_rs.risk`` Rust kernels.
+"""
 from __future__ import annotations
 
 import enum
-import math
 from dataclasses import dataclass
+
+import quant_rs as _qrs
 
 
 class SizingMethod(enum.Enum):
@@ -67,12 +71,8 @@ class PositionSizer:
         Returns the fraction clamped to [0, 1].  A negative Kelly
         (negative expected value) returns 0.0.
         """
-        b = params.win_loss_ratio
-        p = params.win_probability
-        q = 1.0 - p
-        full_kelly = (b * p - q) / b
-        # Apply fractional Kelly scaling and clamp to [0, 1]
-        return max(0.0, min(1.0, full_kelly * params.fraction))
+        full_kelly = _qrs.risk.kelly_fraction(params.win_probability, params.win_loss_ratio)
+        return min(1.0, full_kelly * params.fraction)
 
     def fixed_fraction(self, params: FixedFractionParams) -> float:
         """Risk a fixed fraction of capital per trade."""

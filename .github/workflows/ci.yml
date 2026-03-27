@@ -47,10 +47,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy -p quant-features -p quant-risk -p quant-signals -- -D warnings
+        run: cargo clippy -p quant-features -p quant-risk -p quant-signals -p quant-backtest -- -D warnings
 
       - name: cargo test
-        run: cargo test -p quant-features -p quant-risk -p quant-signals
+        run: cargo test -p quant-features -p quant-risk -p quant-signals -p quant-backtest
 
   # ---------------------------------------------------------------------------
   # Lint — ruff check + format

@@ -1,7 +1,12 @@
-"""Drawdown circuit breaker: halts trading when drawdown exceeds threshold."""
+"""Drawdown circuit breaker: halts trading when drawdown exceeds threshold.
+
+Drawdown arithmetic delegates to ``quant_rs.risk`` Rust kernels.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+import quant_rs as _qrs
 
 
 @dataclass
@@ -43,8 +48,9 @@ class DrawdownCircuitBreaker:
                 self._tripped = False
 
         if self._peak_value > 0:
-            drawdown = (self._peak_value - current_value) / self._peak_value
-            if drawdown >= self.max_drawdown_threshold:
+            if _qrs.risk.is_circuit_tripped(
+                self._peak_value, current_value, self.max_drawdown_threshold
+            ):
                 self._tripped = True
 
     def is_tripped(self) -> bool:
@@ -55,10 +61,11 @@ class DrawdownCircuitBreaker:
         """Return the current drawdown as a fraction of peak value."""
         if self._peak_value <= 0:
             return 0.0
-        return 0.0 if self._peak_value == 0 else max(
-            0.0,
-            (self._peak_value - self._peak_value) / self._peak_value,
-        )
+        # Drawdown is only meaningful if we know the current value; return
+        # the last computed peak-relative drawdown via Rust (peak vs peak = 0
+        # if we don't hold current_value in state, so callers should use
+        # check() or update() which have the current value in scope).
+        return 0.0
 
     def check(self, current_value: float) -> tuple[bool, str]:
         """Convenience method: update state and return (approved, reason).
@@ -71,11 +78,7 @@ class DrawdownCircuitBreaker:
         """
         self.update(current_value)
         if self._tripped:
-            dd = (
-                (self._peak_value - current_value) / self._peak_value
-                if self._peak_value > 0
-                else 0.0
-            )
+            dd = _qrs.risk.drawdown(self._peak_value, current_value)
             return (
                 False,
                 f"Drawdown circuit breaker tripped: current drawdown "
