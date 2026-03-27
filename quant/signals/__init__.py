@@ -3,6 +3,11 @@
 Consumes features from the feature engine and produces signal scores
 and target positions in the range [-1, 1].
 """
+from quant.signals.adaptive_combiner import (
+    AdaptiveCombinerConfig,
+    AdaptiveSignalCombiner,
+    AdaptiveWeights,
+)
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.cross_sectional import (
     CrossSectionalMeanReversion,
@@ -42,6 +47,9 @@ from quant.signals.strategies import (
 )
 
 __all__ = [
+    "AdaptiveCombinerConfig",
+    "AdaptiveSignalCombiner",
+    "AdaptiveWeights",
     "BaseSignal",
     "BreakoutSignal",
     "CorrelationRegime",
