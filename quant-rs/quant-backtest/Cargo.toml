@@ -1,0 +1,15 @@
+[package]
+name = "quant-backtest"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust bar-replay backtest engine: equity curve, trade log, and performance metrics"
+
+[lib]
+crate-type = ["rlib"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "backtest_engine"
+harness = false

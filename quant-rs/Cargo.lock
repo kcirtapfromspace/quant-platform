@@ -436,6 +436,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "quant-backtest"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+]
+
+[[package]]
 name = "quant-features"
 version = "0.1.0"
 dependencies = [
@@ -457,6 +464,7 @@ name = "quant-rs"
 version = "0.1.0"
 dependencies = [
  "pyo3",
+ "quant-backtest",
  "quant-features",
  "quant-risk",
  "quant-signals",

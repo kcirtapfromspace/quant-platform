@@ -693,3 +693,259 @@ class TestSignals:
         assert -1.0 <= score <= 1.0
         assert 0.0 <= confidence <= 1.0
         assert -1.0 <= target <= 1.0
+
+
+# ─── Pure-Python backtest reference ──────────────────────────────────────────
+# Mirrors quant.backtest.engine.BacktestEngine exactly for parity validation.
+
+import math as _math
+
+
+def _py_run_backtest(
+    adj_close: list[float],
+    signals: list[float],
+    commission_pct: float = 0.001,
+    initial_capital: float = 1.0,
+) -> dict:
+    """Pure-Python reference implementation mirroring the BacktestEngine."""
+    n = len(adj_close)
+    assert len(signals) == n
+
+    # Daily returns (pct_change; first bar = 0)
+    daily_returns = [0.0]
+    for i in range(1, n):
+        prev = adj_close[i - 1]
+        daily_returns.append((adj_close[i] - prev) / prev if prev != 0.0 else 0.0)
+
+    # Positions = signals shifted by 1 bar
+    positions = [0.0] + signals[:-1]
+
+    # Net returns = gross - commission
+    net_returns = []
+    for i in range(n):
+        gross = positions[i] * daily_returns[i]
+        delta = 0.0 if i == 0 else abs(positions[i] - positions[i - 1])
+        net_returns.append(gross - commission_pct * delta)
+
+    # Equity curve
+    equity = [initial_capital * (1.0 + net_returns[0])]
+    for i in range(1, n):
+        equity.append(equity[-1] * (1.0 + net_returns[i]))
+
+    # Drawdown series
+    running_max = equity[0]
+    drawdown = []
+    for e in equity:
+        running_max = max(running_max, e)
+        drawdown.append((e - running_max) / running_max if running_max > 0 else 0.0)
+
+    # Trade log
+    trades = []
+    in_trade = False
+    entry_idx = 0
+    direction = ""
+    trade_acc: list[float] = []
+    for i in range(n):
+        pos = positions[i]
+        ret = net_returns[i]
+        if not in_trade:
+            if pos != 0.0:
+                in_trade = True
+                entry_idx = i
+                direction = "long" if pos > 0 else "short"
+                trade_acc = [ret]
+        else:
+            if pos != 0.0:
+                trade_acc.append(ret)
+                direction = "long" if pos > 0 else "short"
+            else:
+                compound = 1.0
+                for r in trade_acc:
+                    compound *= (1.0 + r)
+                trades.append((entry_idx, i - 1, direction, compound - 1.0))
+                in_trade = False
+                trade_acc = []
+    if in_trade and trade_acc:
+        compound = 1.0
+        for r in trade_acc:
+            compound *= (1.0 + r)
+        trades.append((entry_idx, n - 1, direction, compound - 1.0))
+
+    # Metrics
+    mean_r = sum(net_returns) / n
+    var_r = sum((r - mean_r) ** 2 for r in net_returns) / (n - 1) if n > 1 else 0.0
+    std_r = var_r ** 0.5
+    sharpe = (mean_r / std_r) * (252 ** 0.5) if std_r > 0 else 0.0
+
+    max_dd = -min(drawdown) if drawdown else 0.0
+
+    total_ret = equity[-1] / initial_capital - 1.0
+
+    years = n / 252.0
+    total_ratio = equity[-1] / initial_capital
+    cagr_val = (total_ratio ** (1.0 / years) - 1.0) if total_ratio > 0 and years > 0 else 0.0
+
+    trade_rets = [t[3] for t in trades]
+    wr = sum(1 for r in trade_rets if r > 0) / len(trade_rets) if trade_rets else 0.0
+    gross_profit = sum(r for r in trade_rets if r > 0)
+    gross_loss = sum(-r for r in trade_rets if r < 0)
+    pf = (float("inf") if gross_profit > 0 else 0.0) if gross_loss == 0 else gross_profit / gross_loss
+
+    return {
+        "equity_curve": list(zip(equity, drawdown)),
+        "trades": trades,
+        "sharpe_ratio": sharpe,
+        "max_drawdown": max_dd,
+        "cagr": cagr_val,
+        "win_rate": wr,
+        "profit_factor": pf,
+        "total_return": total_ret,
+        "n_trades": len(trades),
+    }
+
+
+# ─── quant_rs.backtest — parity tests ────────────────────────────────────────
+
+
+class TestBacktest:
+    """Validate Rust backtest engine against the pure-Python reference.
+
+    All numeric comparisons use 1e-9 relative tolerance (matching feature/risk tests).
+    profit_factor == inf is handled as an exact equality check.
+    """
+
+    TOL = 1e-9
+
+    def _assert_close(self, rust: float, py: float, label: str = "") -> None:
+        if _math.isinf(py) and _math.isinf(rust):
+            return
+        assert abs(rust - py) <= self.TOL * max(abs(py), 1.0), (
+            f"{label}: Rust={rust!r} vs Python={py!r} (diff={abs(rust - py)!r})"
+        )
+
+    @pytest.fixture
+    def prices(self):
+        return _spy_closes(252, seed=99)
+
+    # ── Basic correctness ─────────────────────────────────────────────────
+
+    def test_flat_strategy_equity_flat(self):
+        prices = [100.0 + float(i) for i in range(50)]
+        signals = [0.0] * 50
+        r = quant_rs.backtest.run_backtest(prices, signals, 0.001, 1.0)
+        for pv, _ in r["equity_curve"]:
+            assert abs(pv - 1.0) < 1e-12, f"equity should be flat, got {pv}"
+        assert r["n_trades"] == 0
+        assert abs(r["total_return"]) < 1e-12
+
+    def test_no_lookahead_bias(self):
+        prices = [100.0, 105.0, 103.0, 108.0]
+        signals = [1.0, 1.0, 1.0, 1.0]
+        r = quant_rs.backtest.run_backtest(prices, signals, 0.0, 1.0)
+        first_pv = r["equity_curve"][0][0]
+        assert abs(first_pv - 1.0) < 1e-12, f"equity[0] should equal initial_capital, got {first_pv}"
+
+    def test_always_long_rising_market(self, prices):
+        signals = [1.0] * len(prices)
+        r = quant_rs.backtest.run_backtest(prices, signals, 0.0, 1.0)
+        assert r["total_return"] != 0.0  # some movement in 252 bars
+
+    def test_commission_reduces_return(self, prices):
+        signals = [1.0] * len(prices)
+        zero = quant_rs.backtest.run_backtest(prices, signals, 0.0, 1.0)
+        cost = quant_rs.backtest.run_backtest(prices, signals, 0.001, 1.0)
+        assert cost["total_return"] < zero["total_return"]
+
+    def test_single_long_trade(self):
+        prices = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 105.0]
+        signals = [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]
+        r = quant_rs.backtest.run_backtest(prices, signals, 0.0, 1.0)
+        assert r["n_trades"] == 1
+        assert r["trades"][0][2] == "long"
+        assert r["trades"][0][3] > 0.0
+
+    def test_single_short_trade(self):
+        prices = [105.0, 104.0, 103.0, 102.0, 101.0, 100.0, 100.0]
+        signals = [-1.0, -1.0, -1.0, -1.0, -1.0, 0.0, 0.0]
+        r = quant_rs.backtest.run_backtest(prices, signals, 0.0, 1.0)
+        assert r["n_trades"] == 1
+        assert r["trades"][0][2] == "short"
+        assert r["trades"][0][3] > 0.0
+
+    def test_equity_curve_length(self, prices):
+        signals = [1.0] * len(prices)
+        r = quant_rs.backtest.run_backtest(prices, signals, 0.001, 1.0)
+        assert len(r["equity_curve"]) == len(prices)
+
+    # ── Numerical parity vs pure-Python reference ─────────────────────────
+
+    @pytest.fixture
+    def _parity_pair(self, prices):
+        signals = [1.0 if i % 5 < 3 else -1.0 for i in range(len(prices))]
+        signals[-10:] = [0.0] * 10  # ensure last trade closes
+        rust = quant_rs.backtest.run_backtest(prices, signals, 0.001, 10_000.0)
+        py = _py_run_backtest(prices, signals, 0.001, 10_000.0)
+        return rust, py
+
+    def test_parity_total_return(self, _parity_pair):
+        rust, py = _parity_pair
+        self._assert_close(rust["total_return"], py["total_return"], "total_return")
+
+    def test_parity_sharpe_ratio(self, _parity_pair):
+        rust, py = _parity_pair
+        self._assert_close(rust["sharpe_ratio"], py["sharpe_ratio"], "sharpe_ratio")
+
+    def test_parity_max_drawdown(self, _parity_pair):
+        rust, py = _parity_pair
+        self._assert_close(rust["max_drawdown"], py["max_drawdown"], "max_drawdown")
+
+    def test_parity_cagr(self, _parity_pair):
+        rust, py = _parity_pair
+        self._assert_close(rust["cagr"], py["cagr"], "cagr")
+
+    def test_parity_win_rate(self, _parity_pair):
+        rust, py = _parity_pair
+        self._assert_close(rust["win_rate"], py["win_rate"], "win_rate")
+
+    def test_parity_profit_factor(self, _parity_pair):
+        rust, py = _parity_pair
+        self._assert_close(rust["profit_factor"], py["profit_factor"], "profit_factor")
+
+    def test_parity_n_trades(self, _parity_pair):
+        rust, py = _parity_pair
+        assert rust["n_trades"] == py["n_trades"], (
+            f"n_trades mismatch: Rust={rust['n_trades']} vs Python={py['n_trades']}"
+        )
+
+    def test_parity_equity_curve_all_bars(self, _parity_pair):
+        rust, py = _parity_pair
+        assert len(rust["equity_curve"]) == len(py["equity_curve"])
+        for i, ((rpv, rdd), (ppv, pdd)) in enumerate(
+            zip(rust["equity_curve"], py["equity_curve"])
+        ):
+            self._assert_close(rpv, ppv, f"equity_curve[{i}].portfolio_value")
+            self._assert_close(rdd, pdd, f"equity_curve[{i}].drawdown")
+
+    def test_parity_trade_returns(self, _parity_pair):
+        rust, py = _parity_pair
+        assert len(rust["trades"]) == len(py["trades"]), "trade count mismatch"
+        for i, (rt, pt) in enumerate(zip(rust["trades"], py["trades"])):
+            # (entry_idx, exit_idx, direction, return)
+            assert rt[0] == pt[0], f"trade[{i}] entry_idx mismatch: {rt[0]} vs {pt[0]}"
+            assert rt[1] == pt[1], f"trade[{i}] exit_idx mismatch: {rt[1]} vs {pt[1]}"
+            assert rt[2] == pt[2], f"trade[{i}] direction mismatch: {rt[2]} vs {pt[2]}"
+            self._assert_close(rt[3], pt[3], f"trade[{i}].return")
+
+    # ── Profit-factor edge cases ──────────────────────────────────────────
+
+    def test_profit_factor_all_winners(self):
+        prices = [100.0 * (1.01 ** i) for i in range(20)]
+        signals = [1.0] * 10 + [0.0] * 10
+        r = quant_rs.backtest.run_backtest(prices, signals, 0.0, 1.0)
+        assert r["profit_factor"] == float("inf") or r["profit_factor"] > 0
+
+    def test_profit_factor_no_trades(self):
+        prices = [100.0] * 20
+        signals = [0.0] * 20
+        r = quant_rs.backtest.run_backtest(prices, signals, 0.001, 1.0)
+        assert r["profit_factor"] == 0.0
