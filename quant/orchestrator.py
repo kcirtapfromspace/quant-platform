@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 import pandas as pd
 from loguru import logger
 
+from quant.execution.quality_tracker import ExecutionQualityTracker
 from quant.oms.models import Order, OrderSide, OrderType
 from quant.oms.system import OrderManagementSystem
 from quant.portfolio.alpha import AlphaCombiner, CombinationMethod
@@ -169,6 +170,7 @@ class OrchestratorConfig:
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
     strategy_monitor: StrategyMonitor | None = None
+    quality_tracker: ExecutionQualityTracker | None = None
 
 
 class StrategyOrchestrator:
@@ -256,6 +258,18 @@ class StrategyOrchestrator:
                         )
                     effective_weights[name] = w * scale
 
+            # ── 1c. Apply execution quality scaling ───────────────────────
+            quality = self._config.quality_tracker
+            if quality is not None:
+                for name, w in list(effective_weights.items()):
+                    q_score = quality.quality_score(name)
+                    if q_score < 1.0:
+                        logger.info(
+                            "  quality: sleeve '{}' scaled {:.2f}",
+                            name, q_score,
+                        )
+                        effective_weights[name] = w * q_score
+
             # ── 2. Run each sleeve ────────────────────────────────────────
             sleeve_results: list[SleeveResult] = []
             for sleeve in self._sleeves:
@@ -317,6 +331,11 @@ class StrategyOrchestrator:
     def strategy_monitor(self) -> StrategyMonitor | None:
         """Strategy performance monitor, or None if not configured."""
         return self._config.strategy_monitor
+
+    @property
+    def quality_tracker(self) -> ExecutionQualityTracker | None:
+        """Execution quality tracker, or None if not configured."""
+        return self._config.quality_tracker
 
     # ── Regime-aware capital allocation ────────────────────────────────
 

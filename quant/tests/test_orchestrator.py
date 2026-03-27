@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from quant.execution.paper import PaperBrokerAdapter
+from quant.execution.quality_tracker import ExecutionQualityTracker, QualityConfig
 from quant.oms.system import OrderManagementSystem
 from quant.orchestrator import (
     OrchestratorConfig,
@@ -649,3 +650,139 @@ class TestMonitorOrchestratorIntegration:
         assert orch.strategy_monitor is None
         result = orch.run_once()
         assert result.error == ""
+
+
+# ── Execution quality tracker orchestrator integration tests ─────────────
+
+
+def _make_quality_orchestrator(
+    tracker: ExecutionQualityTracker | None = None,
+) -> StrategyOrchestrator:
+    """Build an orchestrator with an execution quality tracker."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    tracker = tracker or ExecutionQualityTracker(QualityConfig())
+
+    sleeves = []
+    signal_names = ["alpha", "beta"]
+    for i in range(2):
+        offset = (i + 1) * 0.1
+        scores = {sym: min(0.3 + offset + j * 0.05, 0.95) for j, sym in enumerate(symbols)}
+        sleeves.append(
+            StrategySleeve(
+                name=f"strategy_{signal_names[i]}",
+                signals=[StubSignal(signal_names[i], scores)],
+                capital_weight=0.5,
+                portfolio_config=PortfolioConfig(
+                    optimization_method=OptimizationMethod.RISK_PARITY,
+                    constraints=PortfolioConstraints(
+                        long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                    ),
+                ),
+            )
+        )
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        quality_tracker=tracker,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+class TestQualityOrchestratorIntegration:
+    def test_run_with_quality_tracker_succeeds(self):
+        orch = _make_quality_orchestrator()
+        result = orch.run_once()
+        assert result.error == ""
+        assert len(result.sleeve_results) == 2
+
+    def test_quality_property_exposed(self):
+        tracker = ExecutionQualityTracker(QualityConfig())
+        orch = _make_quality_orchestrator(tracker=tracker)
+        assert orch.quality_tracker is tracker
+
+    def test_good_quality_no_scaling(self):
+        tracker = ExecutionQualityTracker(QualityConfig(cost_budget_bps=10.0))
+        # Record perfect execution for both sleeves
+        for _ in range(10):
+            tracker.record("strategy_alpha", slippage_bps=0.0, notional=10_000)
+            tracker.record("strategy_beta", slippage_bps=0.0, notional=10_000)
+
+        orch = _make_quality_orchestrator(tracker=tracker)
+        result = orch.run_once()
+        total = result.total_portfolio
+        # Both sleeves should get full capital (quality ~1.0)
+        for sr in result.sleeve_results:
+            assert abs(sr.capital_allocated - 0.5 * total) < 1.0
+
+    def test_poor_quality_reduces_capital(self):
+        tracker = ExecutionQualityTracker(QualityConfig(cost_budget_bps=5.0))
+        # Record terrible execution for strategy_alpha
+        for _ in range(20):
+            tracker.record("strategy_alpha", slippage_bps=8.0, notional=10_000)
+        # Good execution for strategy_beta
+        for _ in range(20):
+            tracker.record("strategy_beta", slippage_bps=0.5, notional=10_000)
+
+        score_alpha = tracker.quality_score("strategy_alpha")
+        score_beta = tracker.quality_score("strategy_beta")
+        assert score_alpha < 0.5  # degraded
+        assert score_beta > 0.9  # healthy
+
+        orch = _make_quality_orchestrator(tracker=tracker)
+        result = orch.run_once()
+
+        alpha_sr = next(sr for sr in result.sleeve_results if sr.name == "strategy_alpha")
+        beta_sr = next(sr for sr in result.sleeve_results if sr.name == "strategy_beta")
+
+        # Alpha should get much less capital than beta
+        assert alpha_sr.capital_allocated < beta_sr.capital_allocated
+
+    def test_zero_quality_score_zeroes_capital(self):
+        tracker = ExecutionQualityTracker(QualityConfig(cost_budget_bps=5.0))
+        # Extreme slippage → quality score = 0.0
+        for _ in range(20):
+            tracker.record("strategy_alpha", slippage_bps=50.0, notional=10_000)
+
+        assert tracker.quality_score("strategy_alpha") == 0.0
+
+        orch = _make_quality_orchestrator(tracker=tracker)
+        result = orch.run_once()
+
+        alpha_sr = next(sr for sr in result.sleeve_results if sr.name == "strategy_alpha")
+        assert alpha_sr.capital_allocated == 0.0
+
+    def test_unknown_sleeve_gets_full_capital(self):
+        tracker = ExecutionQualityTracker(QualityConfig())
+        # No fills recorded — quality_score returns 1.0 for unknowns
+        orch = _make_quality_orchestrator(tracker=tracker)
+        result = orch.run_once()
+        total = result.total_portfolio
+        for sr in result.sleeve_results:
+            assert abs(sr.capital_allocated - 0.5 * total) < 1.0
+
+    def test_no_tracker_works_normally(self):
+        orch = _make_orchestrator(n_sleeves=2, capital_weights=[0.5, 0.5])
+        assert orch.quality_tracker is None
+        result = orch.run_once()
+        assert result.error == ""
+
+    def test_config_quality_tracker_default_none(self):
+        config = OrchestratorConfig()
+        assert config.quality_tracker is None
