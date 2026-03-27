@@ -282,7 +282,14 @@ mod tests {
         OrderManagementSystem::new_in_memory().unwrap()
     }
 
-    fn make_fill(broker_id: &str, order_id: &str, symbol: &str, side: OrderSide, qty: f64, price: f64) -> Fill {
+    fn make_fill(
+        broker_id: &str,
+        order_id: &str,
+        symbol: &str,
+        side: OrderSide,
+        qty: f64,
+        price: f64,
+    ) -> Fill {
         Fill {
             fill_id: format!("fill-{}", uuid::Uuid::new_v4()),
             order_id: order_id.to_string(),

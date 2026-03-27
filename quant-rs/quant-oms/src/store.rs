@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::OmsResult;
 use crate::models::{Fill, Order, OrderSide, OrderStatus, OrderType, Position, TimeInForce};
@@ -269,10 +269,7 @@ impl SqliteStateStore {
     }
 
     /// Returns the OMS order ID for a given broker order ID, if it exists.
-    pub fn find_order_id_by_broker_id(
-        &self,
-        broker_order_id: &str,
-    ) -> OmsResult<Option<String>> {
+    pub fn find_order_id_by_broker_id(&self, broker_order_id: &str) -> OmsResult<Option<String>> {
         let result = self
             .conn
             .query_row(

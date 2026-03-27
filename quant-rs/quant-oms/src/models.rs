@@ -23,6 +23,7 @@ impl OrderSide {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "buy" => Some(OrderSide::Buy),
@@ -51,6 +52,7 @@ impl OrderType {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "market" => Some(OrderType::Market),
@@ -89,6 +91,7 @@ impl OrderStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(OrderStatus::Pending),
@@ -143,6 +146,7 @@ impl TimeInForce {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "day" => Some(TimeInForce::Day),
@@ -307,8 +311,7 @@ impl Position {
             || (self.quantity <= 0.0 && filled_qty < 0.0)
         {
             // Increasing or same-side — update weighted average cost.
-            let total_cost =
-                self.avg_cost * self.quantity.abs() + fill.price * fill.quantity;
+            let total_cost = self.avg_cost * self.quantity.abs() + fill.price * fill.quantity;
             self.avg_cost = total_cost / new_qty.abs();
         }
         // Reducing: cost basis stays the same (realized P&L tracked separately).
@@ -364,7 +367,12 @@ mod tests {
 
     #[test]
     fn test_position_apply_fill_sell_reduces_qty() {
-        let mut pos = Position { symbol: "AAPL".into(), quantity: 10.0, avg_cost: 150.0, market_price: 160.0 };
+        let mut pos = Position {
+            symbol: "AAPL".into(),
+            quantity: 10.0,
+            avg_cost: 150.0,
+            market_price: 160.0,
+        };
         let fill = Fill {
             fill_id: "f2".into(),
             order_id: "o2".into(),
@@ -384,7 +392,12 @@ mod tests {
 
     #[test]
     fn test_position_close_resets_avg_cost() {
-        let mut pos = Position { symbol: "AAPL".into(), quantity: 10.0, avg_cost: 150.0, market_price: 0.0 };
+        let mut pos = Position {
+            symbol: "AAPL".into(),
+            quantity: 10.0,
+            avg_cost: 150.0,
+            market_price: 0.0,
+        };
         let fill = Fill {
             fill_id: "f3".into(),
             order_id: "o3".into(),
@@ -404,8 +417,14 @@ mod tests {
     #[test]
     fn test_order_status_round_trip() {
         let statuses = [
-            "pending", "submitted", "accepted", "partially_filled",
-            "filled", "cancelled", "rejected", "expired",
+            "pending",
+            "submitted",
+            "accepted",
+            "partially_filled",
+            "filled",
+            "cancelled",
+            "rejected",
+            "expired",
         ];
         for s in statuses {
             let status = OrderStatus::from_str(s).unwrap();
