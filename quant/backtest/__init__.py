@@ -28,6 +28,12 @@ report = engine.run(
 )
 print(report.summary())
 """
+from quant.backtest.comparison import (
+    BacktestComparator,
+    ComparisonConfig,
+    ComparisonResult,
+    StrategyRow,
+)
 from quant.backtest.engine import BacktestConfig, BacktestEngine
 from quant.backtest.portfolio_backtest import (
     PortfolioBacktestConfig,
@@ -45,6 +51,10 @@ from quant.backtest.walk_forward import (
 )
 
 __all__ = [
+    "BacktestComparator",
+    "ComparisonConfig",
+    "ComparisonResult",
+    "StrategyRow",
     "BacktestConfig",
     "BacktestEngine",
     "BacktestReport",
