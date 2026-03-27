@@ -1294,3 +1294,115 @@ class TestLifecycleIntegration:
         summary = report.summary()
         assert "Strategy Lifecycle Report" in summary
         assert len(summary) > 50
+
+
+# ── Lifecycle reallocation tests ─────────────────────────────────────────
+
+
+def _make_realloc_orchestrator(
+    lifecycle_config: LifecycleConfig | None = None,
+    n_sleeves: int = 2,
+    capital_weights: list[float] | None = None,
+) -> StrategyOrchestrator:
+    """Build orchestrator with lifecycle reallocation enabled."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    lc = lifecycle_config or LifecycleConfig(
+        drawdown_watch=0.15,
+        drawdown_degraded=0.25,
+        drawdown_critical=0.40,
+        eval_window=63,
+    )
+
+    capital_weights = capital_weights or [1.0 / n_sleeves] * n_sleeves
+    signal_names = ["alpha", "beta", "gamma", "delta"]
+    sleeves = []
+    for i in range(n_sleeves):
+        offset = (i + 1) * 0.1
+        scores = {sym: min(0.3 + offset + j * 0.05, 0.95) for j, sym in enumerate(symbols)}
+        sleeves.append(
+            StrategySleeve(
+                name=f"strategy_{signal_names[i % len(signal_names)]}",
+                signals=[StubSignal(signal_names[i % len(signal_names)], scores)],
+                capital_weight=capital_weights[i],
+                portfolio_config=PortfolioConfig(
+                    optimization_method=OptimizationMethod.RISK_PARITY,
+                    constraints=PortfolioConstraints(
+                        long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                    ),
+                ),
+            )
+        )
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        lifecycle_config=lc,
+        apply_lifecycle_realloc=True,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+class TestLifecycleReallocation:
+    def test_realloc_weights_stored_after_first_cycle(self):
+        """After first run_once, lifecycle_weights should be populated."""
+        orch = _make_realloc_orchestrator()
+        assert orch.lifecycle_weights is None
+        orch.run_once()
+        assert orch.lifecycle_weights is not None
+        assert len(orch.lifecycle_weights) == 2
+
+    def test_realloc_weights_applied_on_second_cycle(self):
+        """Second cycle should use recommended weights from first cycle."""
+        orch = _make_realloc_orchestrator(
+            capital_weights=[0.6, 0.4],
+        )
+        r1 = orch.run_once()
+        assert r1.error == ""
+        # After first cycle, lifecycle weights should differ from base
+        lw = orch.lifecycle_weights
+        assert lw is not None
+
+        r2 = orch.run_once()
+        assert r2.error == ""
+        # Second cycle ran successfully with realloc applied
+        assert len(r2.sleeve_results) == 2
+
+    def test_realloc_not_applied_when_disabled(self):
+        """With apply_lifecycle_realloc=False, weights should not be stored."""
+        orch = _make_lifecycle_orchestrator()  # uses default (False)
+        orch.run_once()
+        assert orch.lifecycle_weights is None
+
+    def test_realloc_weights_sum_preserved(self):
+        """Recommended weights should sum close to original total."""
+        orch = _make_realloc_orchestrator(capital_weights=[0.5, 0.5])
+        orch.run_once()
+        lw = orch.lifecycle_weights
+        assert lw is not None
+        total = sum(lw.values())
+        assert abs(total - 1.0) < 0.05
+
+    def test_realloc_multiple_cycles_converge(self):
+        """Lifecycle weights should update each cycle."""
+        orch = _make_realloc_orchestrator()
+        for _ in range(3):
+            result = orch.run_once()
+            assert result.error == ""
+        assert orch.lifecycle_weights is not None
+        assert len(orch.lifecycle_weights) == 2

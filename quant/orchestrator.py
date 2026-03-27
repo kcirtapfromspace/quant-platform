@@ -187,6 +187,7 @@ class OrchestratorConfig:
     net_conflicting: bool = True
     pre_trade_config: PreTradeConfig | None = None
     lifecycle_config: LifecycleConfig | None = None
+    apply_lifecycle_realloc: bool = False
     regime_detector: RegimeDetector | None = None
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
@@ -244,6 +245,7 @@ class StrategyOrchestrator:
 
         # Strategy lifecycle manager (persists across cycles)
         self._lifecycle_mgr: LifecycleManager | None = None
+        self._lifecycle_weights: dict[str, float] | None = None
         if config.lifecycle_config is not None:
             self._lifecycle_mgr = LifecycleManager(config.lifecycle_config)
 
@@ -304,6 +306,21 @@ class StrategyOrchestrator:
                         )
                         effective_weights[name] = w * q_score
 
+            # ── 1d. Apply lifecycle reallocation from previous cycle ───────
+            if (
+                self._config.apply_lifecycle_realloc
+                and self._lifecycle_weights is not None
+            ):
+                for name in list(effective_weights):
+                    if name in self._lifecycle_weights:
+                        prev = effective_weights[name]
+                        effective_weights[name] = self._lifecycle_weights[name]
+                        if abs(effective_weights[name] - prev) > 1e-6:
+                            logger.info(
+                                "  lifecycle: sleeve '{}' {:.1%} → {:.1%}",
+                                name, prev, effective_weights[name],
+                            )
+
             # ── 2. Run each sleeve ────────────────────────────────────────
             sleeve_results: list[SleeveResult] = []
             for sleeve in self._sleeves:
@@ -344,6 +361,12 @@ class StrategyOrchestrator:
                         "Lifecycle: {} critical strategies detected",
                         lifecycle_report.n_critical,
                     )
+                # Store recommended weights for next cycle
+                if self._config.apply_lifecycle_realloc and lifecycle_report.recommendations:
+                    self._lifecycle_weights = {
+                        r.strategy: r.recommended_weight
+                        for r in lifecycle_report.recommendations
+                    }
 
             # ── 3. Combine target weights ─────────────────────────────────
             combined = self._combine_weights(sleeve_results)
@@ -421,6 +444,11 @@ class StrategyOrchestrator:
     def lifecycle_manager(self) -> LifecycleManager | None:
         """Lifecycle manager, or None if not configured."""
         return self._lifecycle_mgr
+
+    @property
+    def lifecycle_weights(self) -> dict[str, float] | None:
+        """Recommended weights from the last lifecycle evaluation, or None."""
+        return self._lifecycle_weights
 
     # ── Regime-aware capital allocation ────────────────────────────────
 
