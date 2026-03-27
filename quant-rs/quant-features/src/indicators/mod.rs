@@ -122,10 +122,11 @@ pub fn macd_histogram(prices: &[f64], fast: usize, slow: usize, signal: usize) -
 
 // ─── RSI ─────────────────────────────────────────────────────────────────────
 
-/// RSI with Wilder smoothing (`alpha = 1 / period`).
+/// RSI with EWM smoothing matching `pandas.ewm(alpha=1/period, adjust=False)`.
 ///
-/// Uses a simple average for the first `period` differences, then exponential.
-/// NaN for all positions before index `period`.
+/// Initialises the EWM from the first diff value (not a simple-average seed).
+/// Output is NaN until `period` non-NaN differences have been accumulated,
+/// matching pandas `min_periods=period` behaviour.
 ///
 /// # Panics
 /// Panics if `period < 2`.
@@ -138,31 +139,28 @@ pub fn rsi(prices: &[f64], period: usize) -> Vec<f64> {
     }
 
     let alpha = 1.0 / period as f64;
-
-    // First `period` differences → simple average for initial avg_gain / avg_loss
     let mut avg_gain = 0.0f64;
     let mut avg_loss = 0.0f64;
-    for i in 1..=period {
-        let d = prices[i] - prices[i - 1];
-        if d > 0.0 {
-            avg_gain += d;
-        } else {
-            avg_loss += -d;
-        }
-    }
-    avg_gain /= period as f64;
-    avg_loss /= period as f64;
+    let mut count = 0usize;
 
-    out[period] = rsi_from_avgs(avg_gain, avg_loss);
-
-    // Remaining values use Wilder EMA
-    for i in (period + 1)..n {
+    for i in 1..n {
         let d = prices[i] - prices[i - 1];
         let gain = if d > 0.0 { d } else { 0.0 };
         let loss = if d < 0.0 { -d } else { 0.0 };
-        avg_gain = alpha * gain + (1.0 - alpha) * avg_gain;
-        avg_loss = alpha * loss + (1.0 - alpha) * avg_loss;
-        out[i] = rsi_from_avgs(avg_gain, avg_loss);
+
+        count += 1;
+        if count == 1 {
+            // Seed EWM with the first observation (matches pandas adjust=False)
+            avg_gain = gain;
+            avg_loss = loss;
+        } else {
+            avg_gain = alpha * gain + (1.0 - alpha) * avg_gain;
+            avg_loss = alpha * loss + (1.0 - alpha) * avg_loss;
+        }
+
+        if count >= period {
+            out[i] = rsi_from_avgs(avg_gain, avg_loss);
+        }
     }
     out
 }

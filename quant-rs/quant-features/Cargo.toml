@@ -9,4 +9,9 @@ crate-type = ["rlib"]
 
 [dev-dependencies]
 approx = "0.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "indicators"
+harness = false
 

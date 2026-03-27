@@ -5,6 +5,11 @@ date and return a pd.Series indexed by date.
 
 Warm-up periods produce NaN (e.g. RSI needs at least *period* rows before the
 first valid value).
+
+When the ``quant_rs`` extension is installed (built via maturin), each feature
+delegates its hot-path computation to the corresponding Rust kernel for maximum
+performance.  If ``quant_rs`` is not available the pure-Python fallback is used
+transparently — no API change for callers.
 """
 from __future__ import annotations
 
@@ -13,6 +18,12 @@ import pandas as pd
 
 from quant.features.base import BaseFeature
 from quant.features.registry import FeatureRegistry
+
+try:
+    import quant_rs as _qrs  # type: ignore[import]
+    _HAS_QUANT_RS = True
+except ImportError:
+    _HAS_QUANT_RS = False
 
 
 # ---------------------------------------------------------------------------
@@ -27,6 +38,9 @@ class Returns(BaseFeature):
         return "returns"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.returns(df["close"].tolist())
+            return pd.Series(values, index=df.index, name=self.name)
         return df["close"].pct_change().rename("returns")
 
 
@@ -38,6 +52,9 @@ class LogReturns(BaseFeature):
         return "log_returns"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.log_returns(df["close"].tolist())
+            return pd.Series(values, index=df.index, name=self.name)
         return np.log(df["close"] / df["close"].shift(1)).rename("log_returns")
 
 
@@ -58,6 +75,9 @@ class RollingMean(BaseFeature):
         return f"rolling_mean_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.rolling_mean(df["close"].tolist(), self._period)
+            return pd.Series(values, index=df.index, name=self.name)
         return df["close"].rolling(self._period).mean().rename(self.name)
 
 
@@ -74,6 +94,9 @@ class RollingStd(BaseFeature):
         return f"rolling_std_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.rolling_std(df["close"].tolist(), self._period)
+            return pd.Series(values, index=df.index, name=self.name)
         return df["close"].rolling(self._period).std().rename(self.name)
 
 
@@ -82,9 +105,10 @@ class RollingStd(BaseFeature):
 # ---------------------------------------------------------------------------
 
 class RSI(BaseFeature):
-    """Relative Strength Index (Wilder smoothing).
+    """Relative Strength Index.
 
-    RSI = 100 - 100 / (1 + RS)  where RS = avg_gain / avg_loss.
+    Uses EWM smoothing with ``alpha = 1 / period`` seeded from the first
+    difference, matching ``pandas.ewm(alpha=1/period, adjust=False)``.
     """
 
     def __init__(self, period: int = 14) -> None:
@@ -97,19 +121,20 @@ class RSI(BaseFeature):
         return f"rsi_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.rsi(df["close"].tolist(), self._period)
+            return pd.Series(values, index=df.index, name=self.name)
+
         delta = df["close"].diff()
         gain = delta.clip(lower=0.0)
         loss = (-delta).clip(lower=0.0)
 
-        # Wilder smoothing: first value is simple average, then exponential
         avg_gain = gain.ewm(alpha=1 / self._period, min_periods=self._period, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1 / self._period, min_periods=self._period, adjust=False).mean()
 
         rs = avg_gain / avg_loss
         rsi = 100.0 - (100.0 / (1.0 + rs))
-        # avg_loss == 0 means all gains → RSI = 100
         rsi = rsi.where(avg_loss != 0.0, 100.0)
-        # avg_gain == 0 and avg_loss == 0 means no movement → RSI = 50
         rsi = rsi.where(~((avg_gain == 0.0) & (avg_loss == 0.0)), 50.0)
         return rsi.rename(self.name)
 
@@ -132,6 +157,9 @@ class MACD(BaseFeature):
         return f"macd_{self._fast}_{self._slow}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.macd(df["close"].tolist(), self._fast, self._slow)
+            return pd.Series(values, index=df.index, name=self.name)
         ema_fast = df["close"].ewm(span=self._fast, adjust=False).mean()
         ema_slow = df["close"].ewm(span=self._slow, adjust=False).mean()
         return (ema_fast - ema_slow).rename(self.name)
@@ -152,6 +180,11 @@ class MACDSignal(BaseFeature):
         return f"macd_signal_{self._fast}_{self._slow}_{self._signal}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.macd_signal(
+                df["close"].tolist(), self._fast, self._slow, self._signal
+            )
+            return pd.Series(values, index=df.index, name=self.name)
         ema_fast = df["close"].ewm(span=self._fast, adjust=False).mean()
         ema_slow = df["close"].ewm(span=self._slow, adjust=False).mean()
         macd_line = ema_fast - ema_slow
@@ -173,6 +206,11 @@ class MACDHistogram(BaseFeature):
         return f"macd_hist_{self._fast}_{self._slow}_{self._signal}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.macd_histogram(
+                df["close"].tolist(), self._fast, self._slow, self._signal
+            )
+            return pd.Series(values, index=df.index, name=self.name)
         ema_fast = df["close"].ewm(span=self._fast, adjust=False).mean()
         ema_slow = df["close"].ewm(span=self._slow, adjust=False).mean()
         macd_line = ema_fast - ema_slow
@@ -196,6 +234,9 @@ class BollingerMid(BaseFeature):
         return f"bb_mid_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.bb_mid(df["close"].tolist(), self._period)
+            return pd.Series(values, index=df.index, name=self.name)
         return df["close"].rolling(self._period).mean().rename(self.name)
 
 
@@ -211,6 +252,9 @@ class BollingerUpper(BaseFeature):
         return f"bb_upper_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.bb_upper(df["close"].tolist(), self._period, self._num_std)
+            return pd.Series(values, index=df.index, name=self.name)
         mid = df["close"].rolling(self._period).mean()
         std = df["close"].rolling(self._period).std()
         return (mid + self._num_std * std).rename(self.name)
@@ -228,13 +272,16 @@ class BollingerLower(BaseFeature):
         return f"bb_lower_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.bb_lower(df["close"].tolist(), self._period, self._num_std)
+            return pd.Series(values, index=df.index, name=self.name)
         mid = df["close"].rolling(self._period).mean()
         std = df["close"].rolling(self._period).std()
         return (mid - self._num_std * std).rename(self.name)
 
 
 class BollingerBandwidth(BaseFeature):
-    """Bollinger bandwidth = (upper - lower) / mid (normalized band width)."""
+    """Bollinger bandwidth = 2 * num_std * std(period) / SMA(period)."""
 
     def __init__(self, period: int = 20, num_std: float = 2.0) -> None:
         self._period = period
@@ -245,6 +292,9 @@ class BollingerBandwidth(BaseFeature):
         return f"bb_bandwidth_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.bb_bandwidth(df["close"].tolist(), self._period, self._num_std)
+            return pd.Series(values, index=df.index, name=self.name)
         mid = df["close"].rolling(self._period).mean()
         std = df["close"].rolling(self._period).std()
         upper = mid + self._num_std * std
@@ -269,11 +319,14 @@ class VolumeSMA(BaseFeature):
         return f"volume_sma_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.volume_sma(df["volume"].tolist(), self._period)
+            return pd.Series(values, index=df.index, name=self.name)
         return df["volume"].rolling(self._period).mean().rename(self.name)
 
 
 class VolumeRatio(BaseFeature):
-    """Volume ratio: current volume / rolling mean volume (measures unusual activity)."""
+    """Volume ratio: current volume / rolling mean volume."""
 
     def __init__(self, period: int = 20) -> None:
         if period < 1:
@@ -285,6 +338,9 @@ class VolumeRatio(BaseFeature):
         return f"volume_ratio_{self._period}"
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
+        if _HAS_QUANT_RS:
+            values = _qrs.features.volume_ratio(df["volume"].tolist(), self._period)
+            return pd.Series(values, index=df.index, name=self.name)
         sma = df["volume"].rolling(self._period).mean()
         return (df["volume"] / sma.replace(0, np.nan)).rename(self.name)
 
