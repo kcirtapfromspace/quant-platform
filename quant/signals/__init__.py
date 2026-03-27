@@ -4,6 +4,19 @@ Consumes features from the feature engine and produces signal scores
 and target positions in the range [-1, 1].
 """
 from quant.signals.base import BaseSignal, SignalOutput
+from quant.signals.cross_sectional import (
+    CrossSectionalMeanReversion,
+    CrossSectionalMomentum,
+    CrossSectionalSignal,
+    CrossSectionalVolatility,
+    QuantileSelection,
+    QuantileSelector,
+    QuantileWeights,
+    percentile_rank,
+    scores_to_quantile_weights,
+    winsorize,
+    z_score_normalize,
+)
 from quant.signals.factors import BreakoutSignal, ReturnQualitySignal, VolatilitySignal
 from quant.signals.regime import (
     CorrelationRegime,
@@ -26,9 +39,17 @@ __all__ = [
     "BaseSignal",
     "BreakoutSignal",
     "CorrelationRegime",
+    "CrossSectionalMeanReversion",
+    "CrossSectionalMomentum",
+    "CrossSectionalSignal",
+    "CrossSectionalVolatility",
     "MarketRegime",
     "MeanReversionSignal",
     "MomentumSignal",
+    "percentile_rank",
+    "QuantileSelection",
+    "QuantileSelector",
+    "QuantileWeights",
     "RegimeConfig",
     "RegimeDetector",
     "RegimeState",
@@ -40,4 +61,7 @@ __all__ = [
     "TrendRegime",
     "VolRegime",
     "VolatilitySignal",
+    "scores_to_quantile_weights",
+    "winsorize",
+    "z_score_normalize",
 ]
