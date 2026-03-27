@@ -140,8 +140,18 @@ mod tests {
 
     fn signals() -> Vec<SignalInput> {
         vec![
-            SignalInput { signal_name: "momentum".into(), score: 0.8, confidence: 0.6, target_position: 0.48 },
-            SignalInput { signal_name: "mean_reversion".into(), score: -0.4, confidence: 0.9, target_position: -0.36 },
+            SignalInput {
+                signal_name: "momentum".into(),
+                score: 0.8,
+                confidence: 0.6,
+                target_position: 0.48,
+            },
+            SignalInput {
+                signal_name: "mean_reversion".into(),
+                score: -0.4,
+                confidence: 0.9,
+                target_position: -0.36,
+            },
         ]
     }
 
@@ -166,5 +176,72 @@ mod tests {
         let a = AlphaScore::new("X", 2.0, 1.5);
         assert_eq!(a.score, 1.0);
         assert_eq!(a.confidence, 1.0);
+    }
+
+    #[test]
+    fn test_alpha_score_target_position_is_score_times_confidence() {
+        let a = AlphaScore::new("Y", 0.6, 0.5);
+        assert!((a.target_position - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_static_weight_combine() {
+        let weights: HashMap<String, f64> = [
+            ("momentum".to_string(), 2.0),
+            ("mean_reversion".to_string(), 1.0),
+        ]
+        .into_iter()
+        .collect();
+        let combiner = AlphaCombiner::new(CombinationMethod::StaticWeight, Some(weights));
+        let alpha = combiner.combine("AAPL", &signals());
+        // score = (0.8*2 + -0.4*1) / (2+1) = 1.2/3 = 0.4
+        assert!((alpha.score - 0.4).abs() < 1e-9, "got {}", alpha.score);
+    }
+
+    #[test]
+    fn test_static_weight_falls_back_to_equal_when_no_weights() {
+        let combiner = AlphaCombiner::new(CombinationMethod::StaticWeight, None);
+        let alpha_static = combiner.combine("AAPL", &signals());
+        let combiner_eq = AlphaCombiner::new(CombinationMethod::EqualWeight, None);
+        let alpha_eq = combiner_eq.combine("AAPL", &signals());
+        assert!((alpha_static.score - alpha_eq.score).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_conviction_weighted_combine() {
+        let combiner = AlphaCombiner::new(CombinationMethod::ConvictionWeighted, None);
+        let alpha = combiner.combine("AAPL", &signals());
+        // Both scores contribute — result should be in [-1, 1]
+        assert!(alpha.score >= -1.0 && alpha.score <= 1.0);
+        assert!(alpha.confidence >= 0.0 && alpha.confidence <= 1.0);
+    }
+
+    #[test]
+    fn test_conviction_weighted_high_confidence_wins() {
+        // momentum: score=0.8, confidence=0.1 → weight = 0.08
+        // trend:    score=0.5, confidence=0.9 → weight = 0.45
+        // trend should dominate
+        let sigs = vec![
+            SignalInput {
+                signal_name: "momentum".into(),
+                score: 0.8,
+                confidence: 0.1,
+                target_position: 0.08,
+            },
+            SignalInput {
+                signal_name: "trend".into(),
+                score: 0.5,
+                confidence: 0.9,
+                target_position: 0.45,
+            },
+        ];
+        let combiner = AlphaCombiner::new(CombinationMethod::ConvictionWeighted, None);
+        let alpha = combiner.combine("X", &sigs);
+        // Combined score should be closer to 0.5 than to 0.8
+        assert!(
+            alpha.score < 0.7,
+            "expected score < 0.7, got {}",
+            alpha.score
+        );
     }
 }

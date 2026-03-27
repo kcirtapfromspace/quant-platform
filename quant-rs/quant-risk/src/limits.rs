@@ -96,4 +96,45 @@ mod tests {
         let result = limits.check(1_000_000.0, 0.0, 0.0, 150_000.0);
         assert!(result.is_some());
     }
+
+    #[test]
+    fn test_zero_capital_rejected() {
+        let limits = ExposureLimits::default();
+        let result = limits.check(0.0, 0.0, 0.0, 50_000.0);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_net_exposure_long_breach() {
+        let limits = ExposureLimits::default(); // max_net_fraction = 1.0
+                                                // current_net = 800k, add 300k long → net = 1.1M on 1M capital = 110% > 100%
+        let result = limits.check(1_000_000.0, 800_000.0, 800_000.0, 300_000.0);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_net_exposure_short_breach() {
+        let limits = ExposureLimits::default(); // max_net_fraction = 1.0
+                                                // current_net = -800k, add -300k short → net = -1.1M → abs = 110% > 100%
+        let result = limits.check(1_000_000.0, 800_000.0, -800_000.0, -300_000.0);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_short_order_gross_uses_abs() {
+        let limits = ExposureLimits::default(); // max_gross_fraction = 1.5
+                                                // Short order of -600k; gross goes from 1M to 1.6M on 1M capital = 160% > 150%
+        let result = limits.check(1_000_000.0, 1_000_000.0, 0.0, -600_000.0);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_custom_limits_constructor() {
+        let limits = ExposureLimits::new(2.0, 0.20, 1.5);
+        assert_eq!(limits.max_gross_fraction, 2.0);
+        assert_eq!(limits.max_position_fraction, 0.20);
+        assert_eq!(limits.max_net_fraction, 1.5);
+        // Should pass: 50k on 1M capital = 5% < 20%
+        assert!(limits.check(1_000_000.0, 0.0, 0.0, 50_000.0).is_none());
+    }
 }

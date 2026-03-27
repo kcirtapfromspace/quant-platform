@@ -19,10 +19,7 @@ impl PipelineResult {
         let gap_count: usize = self.gaps_detected.iter().map(|(_, v)| v.len()).sum();
         format!(
             "symbols={} fetched={} stored={} gaps={}",
-            self.symbols_processed,
-            self.records_fetched,
-            self.records_stored,
-            gap_count
+            self.symbols_processed, self.records_fetched, self.records_stored, gap_count
         )
     }
 }
@@ -67,8 +64,7 @@ impl<S: DataSource> IngestionPipeline<S> {
         let records = if mode == IngestMode::Incremental {
             self.run_incremental(&symbols_upper, end_date)?
         } else {
-            let start_date =
-                start.unwrap_or_else(|| NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
+            let start_date = start.unwrap_or_else(|| NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
             self.source.fetch(&symbols_upper, start_date, end_date)?
         };
 
@@ -109,12 +105,7 @@ impl<S: DataSource> IngestionPipeline<S> {
         let all = self.source.fetch(symbols, min_start, end_date)?;
         let filtered: Vec<OhlcvRecord> = all
             .into_iter()
-            .filter(|r| {
-                r.date
-                    >= *symbol_starts
-                        .get(r.symbol.as_str())
-                        .unwrap_or(&fallback)
-            })
+            .filter(|r| r.date >= *symbol_starts.get(r.symbol.as_str()).unwrap_or(&fallback))
             .collect();
         Ok(filtered)
     }
@@ -217,9 +208,63 @@ mod tests {
     fn business_days_excludes_weekends() {
         let days = business_days(nd(2024, 1, 1), nd(2024, 1, 7));
         // 2024-01-01 is Monday; 2024-01-06 Sat, 2024-01-07 Sun
-        assert!(days.iter().all(|d| {
-            !matches!(d.weekday(), Weekday::Sat | Weekday::Sun)
-        }));
+        assert!(days
+            .iter()
+            .all(|d| { !matches!(d.weekday(), Weekday::Sat | Weekday::Sun) }));
         assert_eq!(days.len(), 5); // Mon–Fri
+    }
+
+    #[test]
+    fn business_days_start_after_end_returns_empty() {
+        let days = business_days(nd(2024, 1, 7), nd(2024, 1, 1));
+        assert!(days.is_empty());
+    }
+
+    #[test]
+    fn business_days_single_weekday_returns_one() {
+        let days = business_days(nd(2024, 1, 3), nd(2024, 1, 3)); // Wednesday
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[0], nd(2024, 1, 3));
+    }
+
+    #[test]
+    fn business_days_single_saturday_returns_empty() {
+        let days = business_days(nd(2024, 1, 6), nd(2024, 1, 6)); // Saturday
+        assert!(days.is_empty());
+    }
+
+    #[test]
+    fn business_days_full_week_monday_to_sunday() {
+        // Mon Jan 1 → Sun Jan 7 = 5 business days (Mon–Fri)
+        let days = business_days(nd(2024, 1, 1), nd(2024, 1, 7));
+        assert_eq!(days.len(), 5);
+    }
+
+    #[test]
+    fn pipeline_summary_counts_gaps() {
+        let result = PipelineResult {
+            symbols_processed: 2,
+            records_fetched: 10,
+            records_stored: 10,
+            gaps_detected: vec![("AAPL".to_string(), vec![nd(2024, 1, 2), nd(2024, 1, 3)])],
+        };
+        let s = result.summary();
+        assert!(s.contains("gaps=2"), "expected gaps=2, got: {s}");
+        assert!(s.contains("symbols=2"), "expected symbols=2, got: {s}");
+    }
+
+    #[test]
+    fn full_mode_uppercases_symbols() {
+        let store = MarketDataStore::open(":memory:").unwrap();
+        let records = vec![rec("AAPL", nd(2024, 1, 2))];
+        let source = MockSource(records);
+        let pipeline = IngestionPipeline::new(store, source);
+        // Pass lowercase — pipeline should uppercase before storing
+        let symbols = vec!["aapl".to_string()];
+        let result = pipeline
+            .run(&symbols, IngestMode::Full, None, Some(nd(2024, 1, 2)))
+            .unwrap();
+        assert_eq!(result.symbols_processed, 1);
+        assert_eq!(result.records_stored, 1);
     }
 }

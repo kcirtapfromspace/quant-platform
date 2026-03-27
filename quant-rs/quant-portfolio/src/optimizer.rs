@@ -104,7 +104,10 @@ pub struct RiskParityOptimizer {
 
 impl Default for RiskParityOptimizer {
     fn default() -> Self {
-        Self { max_iter: 200, tol: 1e-8 }
+        Self {
+            max_iter: 200,
+            tol: 1e-8,
+        }
     }
 }
 
@@ -189,7 +192,11 @@ pub struct MinVarianceOptimizer {
 
 impl Default for MinVarianceOptimizer {
     fn default() -> Self {
-        Self { max_iter: 500, learning_rate: 0.01, tol: 1e-8 }
+        Self {
+            max_iter: 500,
+            learning_rate: 0.01,
+            tol: 1e-8,
+        }
     }
 }
 
@@ -297,7 +304,7 @@ fn marginal_risk_contributions(w: &[f64], cov: &[f64], n: usize) -> Vec<f64> {
 }
 
 /// Cap weights at `max_weight` and renormalise.
-fn apply_max_weight(w: &mut Vec<f64>, max_weight: f64) {
+fn apply_max_weight(w: &mut [f64], max_weight: f64) {
     if max_weight >= 1.0 {
         return;
     }
@@ -344,7 +351,9 @@ mod tests {
         let cov = identity_cov(3);
         let alphas = vec![0.0; 3];
         let constraints = PortfolioConstraints::default();
-        let result = EqualWeightOptimizer.optimize(&syms, &alphas, &cov, &constraints).unwrap();
+        let result = EqualWeightOptimizer
+            .optimize(&syms, &alphas, &cov, &constraints)
+            .unwrap();
         for &w in &result.weights {
             assert!((w - 1.0 / 3.0).abs() < 1e-9, "got {w}");
         }
@@ -385,10 +394,87 @@ mod tests {
         let syms = symbols(2);
         let cov = identity_cov(2);
         let alphas = vec![0.0; 2];
-        let constraints = PortfolioConstraints { max_weight: 0.4, ..Default::default() };
-        let result = EqualWeightOptimizer.optimize(&syms, &alphas, &cov, &constraints).unwrap();
+        let constraints = PortfolioConstraints {
+            max_weight: 0.4,
+            ..Default::default()
+        };
+        let result = EqualWeightOptimizer
+            .optimize(&syms, &alphas, &cov, &constraints)
+            .unwrap();
         for &w in &result.weights {
             assert!(w <= 0.4 + 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_empty_universe_returns_error() {
+        let cov: Vec<f64> = vec![];
+        let alphas: Vec<f64> = vec![];
+        let constraints = PortfolioConstraints::default();
+        assert!(EqualWeightOptimizer
+            .optimize(&[], &alphas, &cov, &constraints)
+            .is_err());
+        assert!(RiskParityOptimizer::default()
+            .optimize(&[], &alphas, &cov, &constraints)
+            .is_err());
+        assert!(MinVarianceOptimizer::default()
+            .optimize(&[], &alphas, &cov, &constraints)
+            .is_err());
+    }
+
+    #[test]
+    fn test_optimize_dispatch_equal_weight() {
+        let syms = symbols(3);
+        let cov = identity_cov(3);
+        let alphas = vec![0.0; 3];
+        let constraints = PortfolioConstraints::default();
+        let result = optimize(
+            OptimizationMethod::EqualWeight,
+            &syms,
+            &alphas,
+            &cov,
+            &constraints,
+        )
+        .unwrap();
+        assert_eq!(result.method, OptimizationMethod::EqualWeight);
+        let sum: f64 = result.weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_optimize_dispatch_mean_variance_uses_risk_parity() {
+        // MeanVariance is aliased to RiskParity in the dispatch fn
+        let syms = symbols(4);
+        let cov = identity_cov(4);
+        let alphas = vec![0.0; 4];
+        let constraints = PortfolioConstraints::default();
+        let result = optimize(
+            OptimizationMethod::MeanVariance,
+            &syms,
+            &alphas,
+            &cov,
+            &constraints,
+        )
+        .unwrap();
+        // Should succeed and weights should sum to 1
+        let sum: f64 = result.weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_weights_always_sum_to_one() {
+        let syms = symbols(5);
+        let cov = identity_cov(5);
+        let alphas = vec![0.1, -0.2, 0.3, 0.0, -0.1];
+        let constraints = PortfolioConstraints::default();
+        for method in [
+            OptimizationMethod::EqualWeight,
+            OptimizationMethod::RiskParity,
+            OptimizationMethod::MinVariance,
+        ] {
+            let result = optimize(method, &syms, &alphas, &cov, &constraints).unwrap();
+            let sum: f64 = result.weights.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-5, "{method:?} weights sum to {sum}");
         }
     }
 }

@@ -55,12 +55,11 @@ pub struct BacktestResult {
 ///
 /// # Arguments
 /// * `adj_close`       — adjusted close prices in ascending date order.
-/// * `signals`         — raw position signal per bar (same length). The engine
-///                       shifts these one bar forward; `signals[t]` is the
-///                       position *entered* at the close of bar *t* and *held*
-///                       during bar *t+1*.
-/// * `commission_pct`  — one-way commission as a fraction of trade value
-///                       (e.g. `0.001` for 10 bps), applied on each position change.
+/// * `signals` — raw position signal per bar (same length). The engine
+///   shifts these one bar forward; `signals[t]` is the position *entered*
+///   at the close of bar *t* and *held* during bar *t+1*.
+/// * `commission_pct` — one-way commission as a fraction of trade value
+///   (e.g. `0.001` for 10 bps), applied on each position change.
 /// * `initial_capital` — starting portfolio value.
 ///
 /// # Panics
@@ -72,7 +71,11 @@ pub fn run_backtest(
     initial_capital: f64,
 ) -> BacktestResult {
     let n = adj_close.len();
-    assert_eq!(signals.len(), n, "adj_close and signals must have the same length");
+    assert_eq!(
+        signals.len(),
+        n,
+        "adj_close and signals must have the same length"
+    );
     assert!(n > 0, "adj_close must not be empty");
 
     // ── Step 1: Daily returns (pct_change; first bar = 0) ─────────────────
@@ -87,9 +90,7 @@ pub fn run_backtest(
     // ── Step 2: Positions = signals shifted by 1 bar (no lookahead) ───────
     // positions[0] = 0 always — no prior signal available.
     let mut positions = vec![0.0_f64; n];
-    for i in 1..n {
-        positions[i] = signals[i - 1];
-    }
+    positions[1..n].copy_from_slice(&signals[..(n - 1)]);
 
     // ── Step 3: Net returns = gross − transaction costs ────────────────────
     // pos_delta[0] = 0 (mirrors pandas .diff().abs().fillna(0.0)).
@@ -450,5 +451,72 @@ mod tests {
         let signals = vec![1.0_f64; 50];
         let r = run_backtest(&prices, &signals, 0.0, 1.0);
         assert!(r.max_drawdown > 0.0);
+    }
+
+    // ── Metric kernel edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn test_max_drawdown_metric_empty() {
+        assert_eq!(max_drawdown_metric(&[]), 0.0);
+    }
+
+    #[test]
+    fn test_max_drawdown_metric_single_bar() {
+        assert_eq!(max_drawdown_metric(&[1.0]), 0.0);
+    }
+
+    #[test]
+    fn test_cagr_zero_bars() {
+        assert_eq!(cagr_metric(1.0, 2.0, 0), 0.0);
+    }
+
+    #[test]
+    fn test_cagr_negative_total_return() {
+        // final_equity = 0 → total_return <= 0 → returns 0.0
+        assert_eq!(cagr_metric(1.0, 0.0, 252), 0.0);
+    }
+
+    #[test]
+    fn test_sharpe_single_observation() {
+        // n < 2 → 0.0
+        assert_eq!(sharpe_ratio(&[0.01]), 0.0);
+    }
+
+    #[test]
+    fn test_win_rate_all_losers() {
+        assert_eq!(win_rate(&[-0.01, -0.02, -0.005]), 0.0);
+    }
+
+    // ── Trade log edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn test_open_trade_captured_at_end_of_data() {
+        // Signal never returns to zero — trade should still be recorded.
+        let prices = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let signals = vec![1.0_f64; 5];
+        let r = run_backtest(&prices, &signals, 0.0, 1.0);
+        assert_eq!(r.trades.len(), 1);
+        assert_eq!(r.trades[0].exit_idx, 4); // pinned to last bar
+    }
+
+    #[test]
+    fn test_multiple_trades_alternating_signal() {
+        // Two distinct round-trips: long then short.
+        let prices = vec![100.0, 102.0, 101.0, 103.0, 100.0, 98.0, 99.0];
+        // long for 2 bars, flat, short for 2 bars, flat
+        let signals = vec![1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 0.0];
+        let r = run_backtest(&prices, &signals, 0.0, 1.0);
+        assert_eq!(r.trades.len(), 2);
+        assert_eq!(r.trades[0].direction, 1);
+        assert_eq!(r.trades[1].direction, -1);
+    }
+
+    #[test]
+    fn test_total_return_consistent_with_equity_curve() {
+        let prices: Vec<f64> = (0..252).map(|i| 100.0 * 1.001_f64.powi(i)).collect();
+        let signals = vec![1.0_f64; 252];
+        let r = run_backtest(&prices, &signals, 0.0, 10_000.0);
+        let expected_tr = r.equity_curve[251] / 10_000.0 - 1.0;
+        assert!((r.total_return - expected_tr).abs() < 1e-9);
     }
 }

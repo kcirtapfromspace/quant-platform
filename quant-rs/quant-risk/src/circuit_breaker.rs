@@ -14,7 +14,9 @@ impl DrawdownCircuitBreaker {
             max_drawdown_fraction > 0.0 && max_drawdown_fraction < 1.0,
             "max_drawdown_fraction must be in (0, 1)"
         );
-        Self { max_drawdown_fraction }
+        Self {
+            max_drawdown_fraction,
+        }
     }
 
     /// Returns `true` if trading should be halted.
@@ -65,5 +67,26 @@ mod tests {
         let cb = DrawdownCircuitBreaker::new(0.20);
         let dd = cb.drawdown(1_000_000.0, 900_000.0);
         assert!((dd - 0.10).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_zero_peak_not_tripped() {
+        let cb = DrawdownCircuitBreaker::new(0.10);
+        // peak <= 0 should never trip
+        assert!(!cb.is_tripped(0.0, 0.0));
+        assert!(!cb.is_tripped(-1.0, -2.0));
+    }
+
+    #[test]
+    fn test_drawdown_zero_peak_returns_zero() {
+        let cb = DrawdownCircuitBreaker::new(0.10);
+        assert_eq!(cb.drawdown(0.0, 500_000.0), 0.0);
+    }
+
+    #[test]
+    fn test_drawdown_current_above_peak_clamps_to_zero() {
+        let cb = DrawdownCircuitBreaker::new(0.10);
+        // current > peak — no drawdown, should clamp to 0
+        assert_eq!(cb.drawdown(900_000.0, 1_000_000.0), 0.0);
     }
 }

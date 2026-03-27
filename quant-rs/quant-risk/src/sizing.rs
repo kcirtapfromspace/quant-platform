@@ -34,12 +34,7 @@ pub fn kelly_fraction(win_rate: f64, win_loss_ratio: f64) -> f64 {
 ///
 /// `quantity = (target_vol * capital) / (volatility * price)`
 /// Returns 0.0 if any input is non-positive.
-pub fn position_size_vol_target(
-    capital: f64,
-    price: f64,
-    volatility: f64,
-    target_vol: f64,
-) -> f64 {
+pub fn position_size_vol_target(capital: f64, price: f64, volatility: f64, target_vol: f64) -> f64 {
     if capital <= 0.0 || price <= 0.0 || volatility <= 0.0 || target_vol <= 0.0 {
         return 0.0;
     }
@@ -82,5 +77,43 @@ mod tests {
         let qty = position_size_vol_target(1_000_000.0, 100.0, 0.2, 0.1);
         // (0.1 * 1_000_000) / (0.2 * 100) = 100_000 / 20 = 5000
         assert!((qty - 5_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_fixed_fraction_zero_fraction() {
+        assert_eq!(position_size_fixed_fraction(100_000.0, 50.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn test_fixed_fraction_zero_capital() {
+        assert_eq!(position_size_fixed_fraction(0.0, 50.0, 0.05), 0.0);
+    }
+
+    #[test]
+    fn test_kelly_win_rate_zero() {
+        // win_rate <= 0 is invalid
+        assert_eq!(kelly_fraction(0.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn test_kelly_win_rate_one() {
+        // win_rate >= 1.0 is invalid
+        assert_eq!(kelly_fraction(1.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn test_kelly_win_loss_ratio_zero() {
+        // win_loss_ratio <= 0 is invalid
+        assert_eq!(kelly_fraction(0.6, 0.0), 0.0);
+    }
+
+    #[test]
+    fn test_vol_target_zero_volatility() {
+        assert_eq!(position_size_vol_target(1_000_000.0, 100.0, 0.0, 0.1), 0.0);
+    }
+
+    #[test]
+    fn test_vol_target_zero_target() {
+        assert_eq!(position_size_vol_target(1_000_000.0, 100.0, 0.2, 0.0), 0.0);
     }
 }
