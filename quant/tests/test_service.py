@@ -314,3 +314,93 @@ class TestRunnerMetrics:
         result = service.run_once()
         assert result is not None
         # If we got here, metric recording didn't crash
+
+
+# ── Data Pipeline Integration Tests ──────────────────────────────────────────
+
+
+class _StubPipeline:
+    """Minimal pipeline stub that records calls."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def run(self, symbols, mode="incremental"):
+        from dataclasses import dataclass
+
+        self.calls.append((symbols, mode))
+
+        @dataclass
+        class _Result:
+            symbols_processed: int = len(symbols)
+            records_fetched: int = 0
+            records_valid: int = 0
+            records_invalid: int = 0
+            records_stored: int = 0
+            gaps_detected: dict = None
+
+            def __post_init__(self):
+                if self.gaps_detected is None:
+                    self.gaps_detected = {}
+
+            def summary(self):
+                return f"symbols={self.symbols_processed}"
+
+        return _Result()
+
+
+class _FailingPipeline:
+    """Pipeline stub that raises on run()."""
+
+    def run(self, symbols, mode="incremental"):
+        raise RuntimeError("data source unavailable")
+
+
+class TestDataPipelineIntegration:
+    def test_pipeline_called_before_run(self):
+        oms = _make_oms()
+        runner = _make_runner(oms=oms)
+        pipeline = _StubPipeline()
+        service = StrategyService(
+            runner=runner,
+            oms=oms,
+            config=ServiceConfig(skip_preflight=True, metrics_port=0),
+            pipeline=pipeline,
+        )
+        result = service.run_once()
+        assert result is not None
+        assert len(pipeline.calls) == 1
+        assert pipeline.calls[0][0] == SYMBOLS
+        assert pipeline.calls[0][1] == "incremental"
+
+    def test_pipeline_not_called_when_disabled(self):
+        oms = _make_oms()
+        runner = _make_runner(oms=oms)
+        pipeline = _StubPipeline()
+        service = StrategyService(
+            runner=runner,
+            oms=oms,
+            config=ServiceConfig(skip_preflight=True, metrics_port=0, refresh_data=False),
+            pipeline=pipeline,
+        )
+        service.run_once()
+        assert len(pipeline.calls) == 0
+
+    def test_pipeline_failure_does_not_block_run(self):
+        """A failing data refresh should not prevent the strategy from running."""
+        oms = _make_oms()
+        runner = _make_runner(oms=oms)
+        service = StrategyService(
+            runner=runner,
+            oms=oms,
+            config=ServiceConfig(skip_preflight=True, metrics_port=0),
+            pipeline=_FailingPipeline(),
+        )
+        result = service.run_once()
+        assert result is not None  # strategy still ran
+
+    def test_no_pipeline_is_noop(self):
+        """Service without pipeline should work fine (backwards compatible)."""
+        service = _make_service()
+        result = service.run_once()
+        assert result is not None

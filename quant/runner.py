@@ -190,6 +190,10 @@ class StrategyRunner:
         self._last_result: RunResult | None = None
 
     @property
+    def config(self) -> RunnerConfig:
+        return self._config
+
+    @property
     def state(self) -> RunnerState:
         return self._state
 

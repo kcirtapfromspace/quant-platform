@@ -54,6 +54,8 @@ class ServiceConfig:
         preflight_config: Pre-flight check configuration.
         skip_preflight:   If True, skip pre-flight checks entirely.
         metrics_port:     Prometheus scrape endpoint port.  Set to 0 to disable.
+        refresh_data:     If True and a pipeline is configured, run incremental
+                          data ingestion before each strategy cycle.
     """
 
     schedule_hour: int = 16
@@ -61,18 +63,22 @@ class ServiceConfig:
     preflight_config: PreflightConfig = field(default_factory=PreflightConfig)
     skip_preflight: bool = False
     metrics_port: int = 8000
+    refresh_data: bool = True
 
 
 class StrategyService:
     """Production service wrapper for the strategy runner.
 
-    Adds scheduling, pre-flight safety checks, and Prometheus
-    instrumentation around each :meth:`StrategyRunner.run_once` call.
+    Adds scheduling, pre-flight safety checks, optional data refresh,
+    and Prometheus instrumentation around each :meth:`StrategyRunner.run_once`
+    call.
 
     Args:
-        runner:  An initialised StrategyRunner instance.
-        oms:     The OrderManagementSystem (used for pre-flight checks).
-        config:  Service-level configuration.
+        runner:   An initialised StrategyRunner instance.
+        oms:      The OrderManagementSystem (used for pre-flight checks).
+        config:   Service-level configuration.
+        pipeline: Optional :class:`~quant.data.pipeline.IngestionPipeline` for
+            automatic market data refresh before each cycle.
     """
 
     def __init__(
@@ -80,10 +86,12 @@ class StrategyService:
         runner: StrategyRunner,
         oms: OrderManagementSystem,
         config: ServiceConfig | None = None,
+        pipeline=None,
     ) -> None:
         self._runner = runner
         self._oms = oms
         self._config = config or ServiceConfig()
+        self._pipeline = pipeline
         self._preflight = PreflightChecker(self._config.preflight_config)
         self._running = False
 
@@ -92,11 +100,15 @@ class StrategyService:
         return self._running
 
     def run_once(self) -> RunResult | None:
-        """Execute a single strategy cycle: preflight -> run -> instrument.
+        """Execute a single strategy cycle: data refresh -> preflight -> run -> instrument.
 
         Returns:
             RunResult from the runner, or None if pre-flight checks failed.
         """
+        # Data refresh
+        if self._pipeline is not None and self._config.refresh_data:
+            self._refresh_data()
+
         # Pre-flight
         if not self._config.skip_preflight:
             pf_result = self._preflight.run(self._oms)
@@ -163,6 +175,21 @@ class StrategyService:
         self._running = False
 
     # ── Private ──────────────────────────────────────────────────────────
+
+    def _refresh_data(self) -> None:
+        """Run incremental data ingestion for the runner's universe."""
+        universe = self._runner.config.universe
+        if not universe:
+            logger.debug("StrategyService: no universe configured — skipping data refresh")
+            return
+        try:
+            result = self._pipeline.run(universe, mode="incremental")
+            logger.info(
+                "StrategyService: data refresh complete — {}",
+                result.summary(),
+            )
+        except Exception:
+            logger.exception("StrategyService: data refresh failed — continuing with stale data")
 
     def _scheduled_run(self) -> None:
         """Wrapper called by the scheduler — catches all exceptions."""
