@@ -35,6 +35,14 @@ from quant.backtest.comparison import (
     StrategyRow,
 )
 from quant.backtest.engine import BacktestConfig, BacktestEngine
+from quant.backtest.multi_strategy import (
+    MultiRebalanceSnapshot,
+    MultiStrategyBacktestEngine,
+    MultiStrategyBacktestReport,
+    MultiStrategyConfig,
+    SleeveConfig,
+    SleeveSnapshot,
+)
 from quant.backtest.portfolio_backtest import (
     PortfolioBacktestConfig,
     PortfolioBacktestEngine,
@@ -59,6 +67,14 @@ __all__ = [
     "BacktestEngine",
     "BacktestReport",
     "FoldResult",
+    # Multi-strategy backtest
+    "MultiRebalanceSnapshot",
+    "MultiStrategyBacktestEngine",
+    "MultiStrategyBacktestReport",
+    "MultiStrategyConfig",
+    "SleeveConfig",
+    "SleeveSnapshot",
+    # Portfolio backtest
     "PortfolioBacktestConfig",
     "PortfolioBacktestEngine",
     "PortfolioBacktestReport",
