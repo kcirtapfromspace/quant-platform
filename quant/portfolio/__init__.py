@@ -12,6 +12,7 @@ from quant.portfolio.attribution import (
     SignalAttribution,
 )
 from quant.portfolio.constraints import PortfolioConstraints
+from quant.portfolio.dashboard import CIODashboard, StrategyLine
 from quant.portfolio.engine import ConstructionResult, PortfolioConfig, PortfolioEngine
 from quant.portfolio.factor_attribution import (
     FactorAttributionReport,
@@ -82,6 +83,9 @@ __all__ = [
     "construct_factors",
     # Constraints
     "PortfolioConstraints",
+    # Dashboard
+    "CIODashboard",
+    "StrategyLine",
     # Lifecycle
     "HealthStatus",
     "LifecycleConfig",
