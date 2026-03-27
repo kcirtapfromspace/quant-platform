@@ -105,8 +105,12 @@ class RSI(BaseFeature):
         avg_gain = gain.ewm(alpha=1 / self._period, min_periods=self._period, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1 / self._period, min_periods=self._period, adjust=False).mean()
 
-        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rs = avg_gain / avg_loss
         rsi = 100.0 - (100.0 / (1.0 + rs))
+        # avg_loss == 0 means all gains → RSI = 100
+        rsi = rsi.where(avg_loss != 0.0, 100.0)
+        # avg_gain == 0 and avg_loss == 0 means no movement → RSI = 50
+        rsi = rsi.where(~((avg_gain == 0.0) & (avg_loss == 0.0)), 50.0)
         return rsi.rename(self.name)
 
 
