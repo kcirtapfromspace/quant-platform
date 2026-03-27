@@ -19,6 +19,15 @@ from quant.portfolio.factor_attribution import (
     FactorContribution,
     construct_factors,
 )
+from quant.portfolio.lifecycle import (
+    HealthStatus,
+    LifecycleConfig,
+    LifecycleManager,
+    LifecycleReport,
+    Recommendation,
+    StrategyHealth,
+    StrategySnapshot,
+)
 from quant.portfolio.optimizers import (
     BaseOptimizer,
     MaxDiversificationOptimizer,
@@ -73,6 +82,14 @@ __all__ = [
     "construct_factors",
     # Constraints
     "PortfolioConstraints",
+    # Lifecycle
+    "HealthStatus",
+    "LifecycleConfig",
+    "LifecycleManager",
+    "LifecycleReport",
+    "Recommendation",
+    "StrategyHealth",
+    "StrategySnapshot",
     # Engine
     "ConstructionResult",
     "PortfolioConfig",
