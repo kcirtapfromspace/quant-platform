@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: quant-data
+Version: 0.1.0
+Summary: Market data ingestion pipeline for quantitative trading
+Requires-Python: >=3.10
+Requires-Dist: yfinance>=0.2.38
+Requires-Dist: duckdb>=0.10.0
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: requests>=2.31.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: apscheduler>=3.10.4
+Requires-Dist: click>=8.1.7
+Requires-Dist: loguru>=0.7.2
+Requires-Dist: pyarrow>=14.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: freezegun>=1.4.0; extra == "dev"

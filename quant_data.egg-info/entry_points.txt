@@ -1,0 +1,2 @@
+[console_scripts]
+quant-ingest = quant.scripts.ingest_eod:main
