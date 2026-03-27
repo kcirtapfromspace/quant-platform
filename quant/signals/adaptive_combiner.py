@@ -35,12 +35,20 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
-from quant.portfolio.alpha import AlphaScore, _clamp
 from quant.signals.base import SignalOutput
+
+if TYPE_CHECKING:
+    from quant.portfolio.alpha import AlphaScore
+
+
+def _clamp(value: float, lo: float = -1.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, value))
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -297,6 +305,8 @@ class AdaptiveSignalCombiner:
         Returns:
             :class:`AlphaScore` with weighted score and contributions.
         """
+        from quant.portfolio.alpha import AlphaScore  # noqa: PLC0415
+
         if not signals:
             return AlphaScore(
                 symbol=symbol,

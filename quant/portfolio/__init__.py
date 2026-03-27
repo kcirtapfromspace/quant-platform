@@ -35,6 +35,12 @@ from quant.portfolio.position_scaler import (
     ScalingConfig,
     ScalingMethod,
 )
+from quant.portfolio.pre_trade import (
+    PreTradeConfig,
+    PreTradePipeline,
+    PreTradeResult,
+    TradeAdjustment,
+)
 from quant.portfolio.rebalancer import RebalanceEngine, RebalanceResult, Trade
 from quant.portfolio.strategy_ranking import (
     RankingConfig,
@@ -80,6 +86,11 @@ __all__ = [
     "OptimizationResult",
     "RiskParityOptimizer",
     "get_optimizer",
+    # Pre-trade pipeline
+    "PreTradeConfig",
+    "PreTradePipeline",
+    "PreTradeResult",
+    "TradeAdjustment",
     # Position scaler
     "PositionScaler",
     "ScaledPosition",
