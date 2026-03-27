@@ -30,6 +30,12 @@ from quant.portfolio.optimizers import (
     get_optimizer,
 )
 from quant.portfolio.rebalancer import RebalanceEngine, RebalanceResult, Trade
+from quant.portfolio.walk_forward_attribution import (
+    WalkForwardAttributionConfig,
+    WalkForwardAttributionResult,
+    WalkForwardAttributor,
+    WindowSnapshot,
+)
 
 __all__ = [
     # Alpha
@@ -65,4 +71,9 @@ __all__ = [
     "RebalanceEngine",
     "RebalanceResult",
     "Trade",
+    # Walk-forward attribution
+    "WalkForwardAttributionConfig",
+    "WalkForwardAttributionResult",
+    "WalkForwardAttributor",
+    "WindowSnapshot",
 ]
