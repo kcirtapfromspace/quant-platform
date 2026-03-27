@@ -26,6 +26,7 @@ from quant.risk.circuit_breaker import DrawdownCircuitBreaker
 from quant.risk.engine import RiskConfig
 from quant.risk.limit_checker import LimitConfig, RiskLimitChecker
 from quant.risk.limits import ExposureLimits
+from quant.risk.reporting import RiskReport, RiskReporter
 from quant.risk.strategy_monitor import MonitorConfig, StrategyMonitor
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig
 from quant.signals.base import BaseSignal, SignalOutput
@@ -1524,3 +1525,100 @@ class TestCircuitBreakerIntegration:
         cb = orch.circuit_breaker
         assert cb is not None
         assert cb._peak_value > 0
+
+
+# ── Risk reporter integration helpers ────────────────────────────────────
+
+
+def _make_risk_reporter_orchestrator() -> StrategyOrchestrator:
+    """Build orchestrator with risk reporter enabled."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    sleeves = [
+        StrategySleeve(
+            name="strategy_alpha",
+            signals=[StubSignal("alpha", dict.fromkeys(SYMBOLS, 0.5))],
+            capital_weight=1.0,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+    ]
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        risk_reporter=RiskReporter(),
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+# ── Risk reporter integration tests ─────────────────────────────────────
+
+
+class TestRiskReporterIntegration:
+    def test_risk_report_attached(self):
+        """run_once should produce a RiskReport when risk_reporter is set."""
+        orch = _make_risk_reporter_orchestrator()
+        result = orch.run_once()
+        assert result.error == ""
+        assert result.risk_report is not None
+        assert isinstance(result.risk_report, RiskReport)
+
+    def test_risk_report_has_var(self):
+        """Risk report should include VaR results."""
+        orch = _make_risk_reporter_orchestrator()
+        result = orch.run_once()
+        report = result.risk_report
+        assert report is not None
+        assert len(report.var_results) > 0
+
+    def test_risk_report_has_stress(self):
+        """Risk report should include stress test results."""
+        orch = _make_risk_reporter_orchestrator()
+        result = orch.run_once()
+        report = result.risk_report
+        assert report is not None
+        assert len(report.stress_results) > 0
+
+    def test_risk_report_summary_readable(self):
+        """Risk report summary should produce text output."""
+        orch = _make_risk_reporter_orchestrator()
+        result = orch.run_once()
+        report = result.risk_report
+        assert report is not None
+        summary = report.summary()
+        assert "Risk Report" in summary
+        assert len(summary) > 50
+
+    def test_risk_report_none_when_not_configured(self):
+        """Without risk_reporter, risk_report should be None."""
+        orch = _make_orchestrator()
+        result = orch.run_once()
+        assert result.risk_report is None
+
+    def test_risk_report_volatility_positive(self):
+        """Annualised volatility should be positive with real returns."""
+        orch = _make_risk_reporter_orchestrator()
+        result = orch.run_once()
+        report = result.risk_report
+        assert report is not None
+        assert report.annualised_volatility > 0

@@ -64,6 +64,7 @@ from quant.risk.engine import (
     RiskConfig,
     RiskEngine,
 )
+from quant.risk.reporting import RiskReport, RiskReporter
 from quant.risk.strategy_monitor import StrategyMonitor
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig, AdaptiveSignalCombiner
 from quant.signals.base import BaseSignal, SignalOutput
@@ -163,6 +164,7 @@ class OrchestratorResult:
     combined_weights: dict[str, float] = field(default_factory=dict)
     pre_trade_result: PreTradeResult | None = None
     lifecycle_report: LifecycleReport | None = None
+    risk_report: RiskReport | None = None
     circuit_breaker_tripped: bool = False
     n_submitted: int = 0
     n_rejected: int = 0
@@ -194,6 +196,7 @@ class OrchestratorConfig:
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
     circuit_breaker: DrawdownCircuitBreaker | None = None
+    risk_reporter: RiskReporter | None = None
     strategy_monitor: StrategyMonitor | None = None
     quality_tracker: ExecutionQualityTracker | None = None
 
@@ -421,6 +424,11 @@ class StrategyOrchestrator:
                 else:
                     n_rejected += 1
 
+            # ── 6. Risk reporting ────────────────────────────────────────
+            risk_report: RiskReport | None = None
+            if self._config.risk_reporter is not None:
+                risk_report = self._generate_risk_report(total_value)
+
             result = OrchestratorResult(
                 timestamp=now,
                 total_portfolio=total_value,
@@ -428,6 +436,7 @@ class StrategyOrchestrator:
                 combined_weights=combined,
                 pre_trade_result=pre_trade_result,
                 lifecycle_report=lifecycle_report,
+                risk_report=risk_report,
                 n_submitted=n_submitted,
                 n_rejected=n_rejected,
             )
@@ -767,6 +776,42 @@ class StrategyOrchestrator:
                 "Orchestrator: OMS submission failed for {} {}", trade.side, trade.symbol
             )
             return False
+
+    # ── Risk reporting ─────────────────────────────────────────────────
+
+    def _generate_risk_report(self, portfolio_value: float) -> RiskReport | None:
+        """Generate a risk report using the configured RiskReporter."""
+        reporter = self._config.risk_reporter
+        if reporter is None:
+            return None
+
+        # Portfolio returns from returns history
+        returns_df = self._get_returns_history(252)
+        current_weights = self._get_current_weights(portfolio_value)
+
+        if returns_df.empty or not current_weights:
+            # Approximate portfolio returns from equal-weight if no positions
+            if returns_df.empty:
+                return None
+            portfolio_returns = returns_df.mean(axis=1)
+        else:
+            # Weight-implied portfolio returns
+            common = [s for s in current_weights if s in returns_df.columns]
+            if not common:
+                portfolio_returns = returns_df.mean(axis=1)
+            else:
+                w = pd.Series({s: current_weights[s] for s in common})
+                portfolio_returns = returns_df[common].mul(w).sum(axis=1)
+
+        # Position dollar values
+        positions = self._oms.get_all_positions()
+        pos_dollars = {sym: pos.market_value for sym, pos in positions.items()}
+
+        return reporter.generate_report(
+            returns=portfolio_returns,
+            positions=pos_dollars,
+            portfolio_value=portfolio_value,
+        )
 
     # ── Portfolio state helpers ───────────────────────────────────────────
 
