@@ -16,6 +16,43 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Rust — cargo test + clippy + fmt for pure-Rust library crates
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: quant-rs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.78"
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            quant-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('quant-rs/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy -p quant-features -p quant-risk -p quant-signals -- -D warnings
+
+      - name: cargo test
+        run: cargo test -p quant-features -p quant-risk -p quant-signals
+
+  # ---------------------------------------------------------------------------
   # Lint — ruff check + format
   # ---------------------------------------------------------------------------
   lint:
@@ -123,6 +160,16 @@ jobs:
       - name: Install dependencies
         run: uv pip install -e ".[dev,monitoring]"
 
+      - name: Install Rust (for maturin)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.78"
+
+      - name: Build and install quant-rs (PyO3 extension)
+        run: |
+          uv pip install maturin
+          cd quant-rs && uv run maturin develop --release
+
       - name: Run Alembic migrations
         run: uv run alembic upgrade head
 
@@ -142,7 +189,7 @@ jobs:
   docker-build:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: [lint, type-check, tests]
+    needs: [lint, type-check, tests, rust]
     steps:
       - uses: actions/checkout@v4
 

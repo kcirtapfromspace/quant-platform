@@ -1,0 +1,8 @@
+[package]
+name = "quant-signals"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust signal framework (stub — full port in Phase 4)"
+
+[lib]
+crate-type = ["rlib"]

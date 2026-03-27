@@ -1,0 +1,12 @@
+[package]
+name = "quant-features"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust compute kernels for technical indicators (no Python dependency)"
+
+[lib]
+crate-type = ["rlib"]
+
+[dev-dependencies]
+approx = "0.5"
+

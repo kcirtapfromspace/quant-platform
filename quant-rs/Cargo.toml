@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "quant-features",
+    "quant-risk",
+    "quant-signals",
+]
+
+[package]
+name = "quant-rs"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3 extension module exposing Rust kernels to Python"
+
+[lib]
+name = "quant_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+quant-features = { path = "quant-features" }
+quant-risk = { path = "quant-risk" }
+quant-signals = { path = "quant-signals" }
+
+[dev-dependencies]
+pyo3 = { version = "0.21", features = ["extension-module", "auto-initialize"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1
