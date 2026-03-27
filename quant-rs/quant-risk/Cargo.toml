@@ -12,3 +12,8 @@ thiserror = "1"
 
 [dev-dependencies]
 approx = "0.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "risk_kernels"
+harness = false
