@@ -29,6 +29,12 @@ from quant.portfolio.optimizers import (
     RiskParityOptimizer,
     get_optimizer,
 )
+from quant.portfolio.position_scaler import (
+    PositionScaler,
+    ScaledPosition,
+    ScalingConfig,
+    ScalingMethod,
+)
 from quant.portfolio.rebalancer import RebalanceEngine, RebalanceResult, Trade
 from quant.portfolio.strategy_ranking import (
     RankingConfig,
@@ -74,6 +80,11 @@ __all__ = [
     "OptimizationResult",
     "RiskParityOptimizer",
     "get_optimizer",
+    # Position scaler
+    "PositionScaler",
+    "ScaledPosition",
+    "ScalingConfig",
+    "ScalingMethod",
     # Rebalancer
     "RebalanceEngine",
     "RebalanceResult",
