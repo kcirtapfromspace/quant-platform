@@ -32,6 +32,9 @@ execution = [
     "ccxt>=4.0.0",
     "ib_insync>=0.9.86",
 ]
+monitoring = [
+    "prometheus-client>=0.20.0",
+]
 
 [project.scripts]
 quant-ingest = "quant.scripts.ingest_eod:main"

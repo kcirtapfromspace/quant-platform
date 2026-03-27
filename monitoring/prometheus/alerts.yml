@@ -1,0 +1,112 @@
+groups:
+  - name: data_pipeline
+    interval: 60s
+    rules:
+      - alert: IngestDataLagHigh
+        expr: quant_ingest_data_lag_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+          team: data
+        annotations:
+          summary: "Ingest data lag exceeds 5 minutes"
+          description: >
+            The ingest pipeline has not produced new data for
+            {{ $value | humanizeDuration }}. Last successful run may have failed
+            or been delayed. Check the pipeline logs.
+
+      - alert: IngestPipelineDown
+        expr: time() - quant_ingest_last_run_timestamp_seconds > 600
+        for: 2m
+        labels:
+          severity: critical
+          team: data
+        annotations:
+          summary: "Ingest pipeline has not run for over 10 minutes"
+          description: >
+            No ingest run recorded in the last 10 minutes. The pipeline may be
+            stuck or crashed.
+
+      - alert: IngestErrorRateHigh
+        expr: >
+          rate(quant_ingest_errors_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: data
+        annotations:
+          summary: "Ingest pipeline errors detected"
+          description: >
+            Ingest error counter is increasing at
+            {{ $value | humanize }} errors/sec over the last 10 minutes.
+
+  - name: execution
+    interval: 30s
+    rules:
+      - alert: ExecutionOrderRejectionSpike
+        expr: >
+          rate(quant_orders_rejected_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          team: execution
+        annotations:
+          summary: "High order rejection rate"
+          description: >
+            Order rejection rate is {{ $value | humanize }} rejections/sec
+            over the last 5 minutes. Check broker connectivity and risk limits.
+
+      - alert: ExecutionFillRateLow
+        expr: >
+          quant_fill_rate < 0.5 and quant_orders_submitted_total > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: execution
+        annotations:
+          summary: "Fill rate below 50%"
+          description: >
+            Fill rate has dropped to {{ $value | humanizePercentage }}.
+            Orders may be stale or the market may be illiquid.
+
+      - alert: ExecutionOrderLatencyHigh
+        expr: >
+          histogram_quantile(0.95, rate(quant_order_latency_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: execution
+        annotations:
+          summary: "Order-to-fill latency p95 exceeds 5 seconds"
+          description: >
+            p95 order latency is {{ $value }}s. Broker may be slow or
+            orders are queueing.
+
+  - name: risk
+    interval: 30s
+    rules:
+      - alert: CircuitBreakerTripped
+        expr: quant_circuit_breaker_tripped == 1
+        for: 0m
+        labels:
+          severity: critical
+          team: risk
+        annotations:
+          summary: "Drawdown circuit breaker has tripped — trading halted"
+          description: >
+            The drawdown circuit breaker fired. Current drawdown is
+            {{ with query "quant_drawdown_current" }}{{ . | first | value | humanizePercentage }}{{ end }}.
+            All new order submissions are blocked. Investigate portfolio losses
+            immediately.
+
+      - alert: DrawdownWarning
+        expr: quant_drawdown_current > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: risk
+        annotations:
+          summary: "Portfolio drawdown exceeds 5%"
+          description: >
+            Current drawdown is {{ $value | humanizePercentage }}.
+            Circuit breaker trips at the configured threshold.
