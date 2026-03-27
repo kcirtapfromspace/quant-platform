@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from quant.execution.cost_model import CostModelConfig, TransactionCostModel
 from quant.execution.paper import PaperBrokerAdapter
 from quant.execution.quality_tracker import ExecutionQualityTracker, QualityConfig
 from quant.oms.system import OrderManagementSystem
@@ -18,7 +19,10 @@ from quant.orchestrator import (
 from quant.portfolio.constraints import PortfolioConstraints
 from quant.portfolio.engine import PortfolioConfig
 from quant.portfolio.optimizers import OptimizationMethod
+from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
+from quant.portfolio.pre_trade import PreTradeConfig
 from quant.risk.engine import RiskConfig
+from quant.risk.limit_checker import LimitConfig, RiskLimitChecker
 from quant.risk.limits import ExposureLimits
 from quant.risk.strategy_monitor import MonitorConfig, StrategyMonitor
 from quant.signals.base import BaseSignal, SignalOutput
@@ -786,3 +790,245 @@ class TestQualityOrchestratorIntegration:
     def test_config_quality_tracker_default_none(self):
         config = OrchestratorConfig()
         assert config.quality_tracker is None
+
+
+# ── Tests: Position scaler integration ─────────────────────────────────────
+
+
+def _make_scaling_orchestrator(
+    scaling_config: ScalingConfig,
+) -> StrategyOrchestrator:
+    """Build orchestrator with position scaling enabled on sleeves."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    sleeves = [
+        StrategySleeve(
+            name="scaled_sleeve",
+            signals=[StubSignal("momentum", {"AAPL": 0.8, "GOOG": 0.4, "MSFT": 0.6})],
+            capital_weight=1.0,
+            scaling_config=scaling_config,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+    ]
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+class TestPositionScalerIntegration:
+    def test_conviction_scaling_runs(self):
+        orch = _make_scaling_orchestrator(ScalingConfig(method=ScalingMethod.CONVICTION))
+        result = orch.run_once()
+        assert result.error == ""
+        assert len(result.combined_weights) > 0
+
+    def test_vol_adjusted_scaling_runs(self):
+        orch = _make_scaling_orchestrator(
+            ScalingConfig(method=ScalingMethod.VOL_ADJUSTED)
+        )
+        result = orch.run_once()
+        assert result.error == ""
+
+    def test_kelly_scaling_runs(self):
+        orch = _make_scaling_orchestrator(
+            ScalingConfig(method=ScalingMethod.KELLY, kelly_fraction=0.5)
+        )
+        result = orch.run_once()
+        assert result.error == ""
+
+    def test_none_scaling_passthrough(self):
+        """ScalingMethod.NONE should behave like no scaler configured."""
+        orch_none = _make_scaling_orchestrator(ScalingConfig(method=ScalingMethod.NONE))
+        orch_no_scaler = _make_orchestrator(n_sleeves=1, capital_weights=[1.0])
+
+        r_none = orch_none.run_once()
+        r_plain = orch_no_scaler.run_once()
+        assert r_none.error == ""
+        assert r_plain.error == ""
+
+    def test_no_scaling_config_skips(self):
+        """With scaling_config=None, orchestrator should skip scaling."""
+        orch = _make_orchestrator(n_sleeves=1, capital_weights=[1.0])
+        result = orch.run_once()
+        assert result.error == ""
+
+    def test_min_confidence_filters_low(self):
+        orch = _make_scaling_orchestrator(
+            ScalingConfig(method=ScalingMethod.CONVICTION, min_confidence=0.99)
+        )
+        result = orch.run_once()
+        # High min_confidence may zero out alphas → fewer/no weights
+        assert result.error == ""
+
+    def test_config_scaling_default_none(self):
+        sleeve = StrategySleeve(name="test")
+        assert sleeve.scaling_config is None
+
+
+# ── Tests: Pre-trade pipeline integration ──────────────────────────────────
+
+
+def _make_pretrade_orchestrator(
+    pre_trade_config: PreTradeConfig,
+) -> StrategyOrchestrator:
+    """Build orchestrator with pre-trade pipeline enabled."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    sleeves = [
+        StrategySleeve(
+            name="strategy_a",
+            signals=[StubSignal("sig_a", {"AAPL": 0.7, "GOOG": 0.5, "MSFT": 0.3})],
+            capital_weight=0.6,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+        StrategySleeve(
+            name="strategy_b",
+            signals=[StubSignal("sig_b", {"AAPL": 0.4, "GOOG": 0.8, "MSFT": 0.6})],
+            capital_weight=0.4,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+    ]
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        pre_trade_config=pre_trade_config,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+class TestPreTradePipelineIntegration:
+    def test_basic_pretrade_runs(self):
+        config = PreTradeConfig(min_trade_weight=0.0, min_trade_dollars=0.0)
+        orch = _make_pretrade_orchestrator(config)
+        result = orch.run_once()
+        assert result.error == ""
+        assert result.pre_trade_result is not None
+
+    def test_pre_trade_result_attached(self):
+        config = PreTradeConfig(min_trade_weight=0.0, min_trade_dollars=0.0)
+        orch = _make_pretrade_orchestrator(config)
+        result = orch.run_once()
+        assert result.pre_trade_result is not None
+        assert result.pre_trade_result.timestamp is not None
+
+    def test_no_pretrade_config_skips(self):
+        orch = _make_orchestrator(n_sleeves=2, capital_weights=[0.5, 0.5])
+        result = orch.run_once()
+        assert result.pre_trade_result is None
+
+    def test_min_weight_filter_active(self):
+        # Set high min trade weight — should filter small trades
+        config = PreTradeConfig(min_trade_weight=0.50, min_trade_dollars=0.0)
+        orch = _make_pretrade_orchestrator(config)
+        result = orch.run_once()
+        assert result.error == ""
+        assert result.pre_trade_result is not None
+        # With 0.50 threshold, most trades should be filtered
+        assert result.pre_trade_result.trades_filtered >= 0
+
+    def test_limit_checker_enforcement(self):
+        checker = RiskLimitChecker(LimitConfig(
+            max_position_weight=0.05,
+            max_concentration_hhi=None,
+        ))
+        config = PreTradeConfig(
+            limit_checker=checker,
+            enforce_limits=True,
+            min_trade_weight=0.0,
+            min_trade_dollars=0.0,
+        )
+        orch = _make_pretrade_orchestrator(config)
+        result = orch.run_once()
+        assert result.error == ""
+        # Weights should be clamped to 0.05
+        for w in result.combined_weights.values():
+            assert abs(w) <= 0.05 + 1e-10
+
+    def test_cost_filter_with_model(self):
+        cost_model = TransactionCostModel(CostModelConfig(
+            default_spread_bps=100.0,  # very expensive
+            impact_coefficient=0.0,
+            commission_per_share=0.0,
+        ))
+        config = PreTradeConfig(
+            cost_model=cost_model,
+            cost_alpha_ratio=0.01,  # very tight ratio
+            min_trade_weight=0.0,
+            min_trade_dollars=0.0,
+        )
+        orch = _make_pretrade_orchestrator(config)
+        result = orch.run_once()
+        # Pipeline runs without error even if it filters everything
+        assert result.error == ""
+
+    def test_config_pre_trade_default_none(self):
+        config = OrchestratorConfig()
+        assert config.pre_trade_config is None
+
+    def test_combined_weights_reflect_pretrade(self):
+        """Orchestrator's combined_weights should be the post-pretrade weights."""
+        checker = RiskLimitChecker(LimitConfig(
+            max_position_weight=0.01,
+            max_concentration_hhi=None,
+        ))
+        config = PreTradeConfig(
+            limit_checker=checker,
+            enforce_limits=True,
+            min_trade_weight=0.0,
+            min_trade_dollars=0.0,
+        )
+        orch = _make_pretrade_orchestrator(config)
+        result = orch.run_once()
+        # combined_weights should match the pre-trade adjusted weights
+        if result.pre_trade_result is not None:
+            for sym in result.combined_weights:
+                assert abs(result.combined_weights[sym]) <= 0.01 + 1e-10

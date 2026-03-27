@@ -47,6 +47,8 @@ from quant.oms.models import Order, OrderSide, OrderType
 from quant.oms.system import OrderManagementSystem
 from quant.portfolio.alpha import AlphaCombiner, CombinationMethod
 from quant.portfolio.engine import ConstructionResult, PortfolioConfig, PortfolioEngine
+from quant.portfolio.position_scaler import PositionScaler, ScalingConfig
+from quant.portfolio.pre_trade import PreTradeConfig, PreTradePipeline, PreTradeResult
 from quant.risk.engine import (
     Order as RiskOrder,
 )
@@ -86,6 +88,8 @@ class StrategySleeve:
         risk_config:        Risk engine config for this sleeve.
         combination_method: How to combine this sleeve's signal outputs.
         signal_weights:     Static weights for STATIC_WEIGHT combination.
+        scaling_config:     Position scaling config (conviction / vol / Kelly).
+                            None to skip scaling.
         sector_map:         {symbol: sector} for risk checks.
         lookback_days:      History for covariance estimation.
         enabled:            If False, skip this sleeve entirely.
@@ -99,6 +103,7 @@ class StrategySleeve:
     risk_config: RiskConfig | None = None
     combination_method: CombinationMethod = CombinationMethod.EQUAL_WEIGHT
     signal_weights: dict[str, float] | None = None
+    scaling_config: ScalingConfig | None = None
     sector_map: dict[str, str] = field(default_factory=dict)
     lookback_days: int = 252
     enabled: bool = True
@@ -143,6 +148,7 @@ class OrchestratorResult:
     total_portfolio: float = 0.0
     sleeve_results: list[SleeveResult] = field(default_factory=list)
     combined_weights: dict[str, float] = field(default_factory=dict)
+    pre_trade_result: PreTradeResult | None = None
     n_submitted: int = 0
     n_rejected: int = 0
     error: str = ""
@@ -166,6 +172,7 @@ class OrchestratorConfig:
     sector_map: dict[str, str] = field(default_factory=dict)
     min_order_value: float = 100.0
     net_conflicting: bool = True
+    pre_trade_config: PreTradeConfig | None = None
     regime_detector: RegimeDetector | None = None
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
@@ -288,6 +295,24 @@ class StrategyOrchestrator:
             # ── 3. Combine target weights ─────────────────────────────────
             combined = self._combine_weights(sleeve_results)
 
+            # ── 3b. Pre-trade pipeline (limits + cost + min filter) ───────
+            pre_trade_result: PreTradeResult | None = None
+            if self._config.pre_trade_config is not None:
+                pipeline = PreTradePipeline(self._config.pre_trade_config)
+                pre_trade_result = pipeline.process(
+                    target_weights=combined,
+                    current_weights=current_weights,
+                    portfolio_value=total_value,
+                    sector_map=self._config.sector_map or None,
+                )
+                if pre_trade_result.was_modified:
+                    logger.info(
+                        "  pre-trade: {} adjustments, {} trades filtered",
+                        pre_trade_result.n_adjustments,
+                        pre_trade_result.trades_filtered,
+                    )
+                combined = pre_trade_result.adjusted_weights
+
             # ── 4. Compute net trades ─────────────────────────────────────
             trades = self._compute_trades(current_weights, combined, total_value)
 
@@ -308,6 +333,7 @@ class StrategyOrchestrator:
                 total_portfolio=total_value,
                 sleeve_results=sleeve_results,
                 combined_weights=combined,
+                pre_trade_result=pre_trade_result,
                 n_submitted=n_submitted,
                 n_rejected=n_rejected,
             )
@@ -421,9 +447,16 @@ class StrategyOrchestrator:
             )
             alpha_scores = combiner.combine_universe(timestamp, universe_signals)
 
+            # Position scaling (conviction / vol-adjusted / Kelly)
+            returns_history = self._get_returns_history(sleeve.lookback_days)
+            if sleeve.scaling_config is not None:
+                scaler = PositionScaler(sleeve.scaling_config)
+                alpha_scores = scaler.scale_to_alpha_dict(
+                    alpha_scores, returns_history
+                )
+
             # Portfolio construction
             engine = PortfolioEngine(sleeve.portfolio_config)
-            returns_history = self._get_returns_history(sleeve.lookback_days)
 
             construction = engine.construct(
                 alpha_scores=alpha_scores,
