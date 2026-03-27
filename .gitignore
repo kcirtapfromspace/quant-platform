@@ -41,3 +41,7 @@ Thumbs.db
 *.parquet
 *.duckdb
 *.duckdb.wal
+
+# Demo frontend
+demo/node_modules/
+demo/dist/
