@@ -19,6 +19,7 @@ from quant.portfolio.engine import PortfolioConfig
 from quant.portfolio.optimizers import OptimizationMethod
 from quant.risk.engine import RiskConfig
 from quant.risk.limits import ExposureLimits
+from quant.risk.strategy_monitor import MonitorConfig, StrategyMonitor
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.regime import (
     MarketRegime,
@@ -541,3 +542,110 @@ class TestRegimeAwareOrchestrator:
         assert r2 is not None
         # Both should be valid RegimeState (same data, so same result)
         assert r1.regime == r2.regime
+
+
+# ── Strategy monitor orchestrator integration tests ───────────────────────
+
+
+def _make_monitored_orchestrator(
+    monitor: StrategyMonitor | None = None,
+) -> StrategyOrchestrator:
+    """Build an orchestrator with a strategy performance monitor."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    monitor = monitor or StrategyMonitor(MonitorConfig())
+
+    sleeves = []
+    signal_names = ["alpha", "beta"]
+    for i in range(2):
+        offset = (i + 1) * 0.1
+        scores = {sym: min(0.3 + offset + j * 0.05, 0.95) for j, sym in enumerate(symbols)}
+        sleeves.append(
+            StrategySleeve(
+                name=f"strategy_{signal_names[i]}",
+                signals=[StubSignal(signal_names[i], scores)],
+                capital_weight=0.5,
+                portfolio_config=PortfolioConfig(
+                    optimization_method=OptimizationMethod.RISK_PARITY,
+                    constraints=PortfolioConstraints(
+                        long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                    ),
+                ),
+            )
+        )
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        strategy_monitor=monitor,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+class TestMonitorOrchestratorIntegration:
+    def test_run_with_monitor_succeeds(self):
+        orch = _make_monitored_orchestrator()
+        result = orch.run_once()
+        assert result.error == ""
+        assert len(result.sleeve_results) == 2
+
+    def test_monitor_updates_after_run(self):
+        monitor = StrategyMonitor(MonitorConfig())
+        orch = _make_monitored_orchestrator(monitor=monitor)
+        orch.run_once()
+
+        # Monitor should have tracked both sleeves
+        assert len(monitor.strategy_names) == 2
+        assert "strategy_alpha" in monitor.strategy_names
+        assert "strategy_beta" in monitor.strategy_names
+
+    def test_monitor_property_exposed(self):
+        monitor = StrategyMonitor(MonitorConfig())
+        orch = _make_monitored_orchestrator(monitor=monitor)
+        assert orch.strategy_monitor is monitor
+
+    def test_paused_sleeve_gets_zero_capital(self):
+        monitor = StrategyMonitor(MonitorConfig(pause_drawdown=0.01))
+        orch = _make_monitored_orchestrator(monitor=monitor)
+
+        # Pre-register "strategy_alpha" in the monitor and force it into PAUSED
+        monitor.update("strategy_alpha", 1_000_000)
+        monitor.update("strategy_alpha", 800_000)  # 20% DD → paused
+
+        assert monitor.capital_scale("strategy_alpha") == 0.0
+
+        result = orch.run_once()
+        # strategy_alpha should have 0 capital allocated
+        alpha_sr = next(sr for sr in result.sleeve_results if sr.name == "strategy_alpha")
+        assert alpha_sr.capital_allocated == 0.0
+
+    def test_healthy_sleeves_unaffected(self):
+        monitor = StrategyMonitor(MonitorConfig())
+        orch = _make_monitored_orchestrator(monitor=monitor)
+
+        result = orch.run_once()
+        total = result.total_portfolio
+        # Both sleeves healthy, each gets 0.5 * total
+        for sr in result.sleeve_results:
+            assert abs(sr.capital_allocated - 0.5 * total) < 1.0
+
+    def test_no_monitor_works_normally(self):
+        orch = _make_orchestrator(n_sleeves=2, capital_weights=[0.5, 0.5])
+        assert orch.strategy_monitor is None
+        result = orch.run_once()
+        assert result.error == ""

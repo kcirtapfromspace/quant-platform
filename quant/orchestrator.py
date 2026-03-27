@@ -54,6 +54,7 @@ from quant.risk.engine import (
     RiskConfig,
     RiskEngine,
 )
+from quant.risk.strategy_monitor import StrategyMonitor
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.regime import RegimeDetector, RegimeState, RegimeWeightAdapter
 
@@ -167,6 +168,7 @@ class OrchestratorConfig:
     regime_detector: RegimeDetector | None = None
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
+    strategy_monitor: StrategyMonitor | None = None
 
 
 class StrategyOrchestrator:
@@ -241,6 +243,19 @@ class StrategyOrchestrator:
             # ── 1. Detect regime and adjust capital weights ──────────────
             effective_weights = self._regime_adjusted_weights()
 
+            # ── 1b. Apply strategy monitor scaling ────────────────────────
+            monitor = self._config.strategy_monitor
+            if monitor is not None:
+                for name, w in list(effective_weights.items()):
+                    scale = monitor.capital_scale(name)
+                    if scale < 1.0:
+                        logger.info(
+                            "  monitor: sleeve '{}' scaled {:.0%} (health={})",
+                            name, scale, monitor.status(name).health.value
+                            if name in monitor.strategy_names else "unknown",
+                        )
+                    effective_weights[name] = w * scale
+
             # ── 2. Run each sleeve ────────────────────────────────────────
             sleeve_results: list[SleeveResult] = []
             for sleeve in self._sleeves:
@@ -249,6 +264,12 @@ class StrategyOrchestrator:
                 cap_w = effective_weights.get(sleeve.name, sleeve.capital_weight)
                 sr = self._run_sleeve(sleeve, total_value, now, capital_weight_override=cap_w)
                 sleeve_results.append(sr)
+
+            # ── 2b. Update monitor with sleeve results ────────────────────
+            if monitor is not None:
+                for sr in sleeve_results:
+                    if not sr.error:
+                        monitor.update(sr.name, sr.capital_allocated)
 
             # ── 3. Combine target weights ─────────────────────────────────
             combined = self._combine_weights(sleeve_results)
@@ -291,6 +312,11 @@ class StrategyOrchestrator:
     def last_regime(self) -> RegimeState | None:
         """Most recently detected regime state, or None if not yet run."""
         return self._last_regime
+
+    @property
+    def strategy_monitor(self) -> StrategyMonitor | None:
+        """Strategy performance monitor, or None if not configured."""
+        return self._config.strategy_monitor
 
     # ── Regime-aware capital allocation ────────────────────────────────
 

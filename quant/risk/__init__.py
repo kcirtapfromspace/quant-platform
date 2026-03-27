@@ -10,6 +10,12 @@ from quant.risk.engine import RiskCheckResult, RiskConfig, RiskEngine
 from quant.risk.limits import ExposureLimits
 from quant.risk.reporting import RiskReport, RiskReporter, StressScenario
 from quant.risk.sizing import PositionSizer, SizingMethod
+from quant.risk.strategy_monitor import (
+    HealthLevel,
+    MonitorConfig,
+    StrategyMonitor,
+    StrategyStatus,
+)
 
 __all__ = [
     "CorrelationConfig",
@@ -18,6 +24,8 @@ __all__ = [
     "CorrelationState",
     "DrawdownCircuitBreaker",
     "ExposureLimits",
+    "HealthLevel",
+    "MonitorConfig",
     "PositionSizer",
     "RiskCheckResult",
     "RiskConfig",
@@ -25,5 +33,7 @@ __all__ = [
     "RiskReport",
     "RiskReporter",
     "SizingMethod",
+    "StrategyMonitor",
+    "StrategyStatus",
     "StressScenario",
 ]
