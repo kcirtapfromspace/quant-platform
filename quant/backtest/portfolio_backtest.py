@@ -49,10 +49,13 @@ import pandas as pd
 from loguru import logger
 
 from quant.backtest import metrics as m
+from quant.execution.cost_model import TransactionCostModel
 from quant.portfolio.alpha import AlphaCombiner, CombinationMethod
 from quant.portfolio.attribution import AttributionReport, PerformanceAttributor
 from quant.portfolio.engine import PortfolioConfig, PortfolioEngine
 from quant.portfolio.factor_attribution import FactorAttributionReport, FactorAttributor
+from quant.portfolio.position_scaler import PositionScaler, ScalingConfig
+from quant.portfolio.pre_trade import PreTradeConfig, PreTradePipeline
 from quant.signals.base import BaseSignal, SignalOutput
 
 # ---------------------------------------------------------------------------
@@ -73,6 +76,13 @@ class PortfolioBacktestConfig:
         portfolio_config: Portfolio construction / optimisation settings.
         combination_method: How to combine signal outputs into alpha.
         signal_weights: Static weights for STATIC_WEIGHT combination.
+        scaling_config: Position scaling config (conviction / vol / Kelly).
+            None to skip (raw alphas go directly to optimizer).
+        pre_trade_config: Pre-trade pipeline config (risk limits, cost filter,
+            minimum trade filter).  None to skip.
+        cost_model: Transaction cost model for realistic cost simulation.
+            When set, overrides the flat ``commission_bps`` with per-trade
+            spread + impact + commission estimation.
         sector_map: ``{symbol: sector}`` for constraint checks.
         min_history: Minimum trading days of data before the first trade.
         benchmark: Column name in the returns DataFrame to use as benchmark.
@@ -86,6 +96,9 @@ class PortfolioBacktestConfig:
     portfolio_config: PortfolioConfig = field(default_factory=PortfolioConfig)
     combination_method: CombinationMethod = CombinationMethod.EQUAL_WEIGHT
     signal_weights: dict[str, float] | None = None
+    scaling_config: ScalingConfig | None = None
+    pre_trade_config: PreTradeConfig | None = None
+    cost_model: TransactionCostModel | None = None
     sector_map: dict[str, str] = field(default_factory=dict)
     min_history: int = 60
     benchmark: str | None = None
@@ -348,7 +361,17 @@ class PortfolioBacktestEngine:
                         abs(new_weights.get(s, 0.0) - weights.get(s, 0.0))
                         for s in all_syms
                     )
-                    costs = turnover * portfolio_value * commission_rate
+
+                    # Cost estimation: full model or flat commission
+                    if config.cost_model is not None:
+                        costs = self._estimate_rebalance_cost(
+                            config.cost_model,
+                            new_weights,
+                            weights,
+                            portfolio_value,
+                        )
+                    else:
+                        costs = turnover * portfolio_value * commission_rate
                     portfolio_value -= costs
                     total_costs += costs
 
@@ -596,6 +619,11 @@ class PortfolioBacktestEngine:
         # ── Combine into alpha ─────────────────────────────────────────
         alpha_scores = combiner.combine_universe(ts, universe_signals)
 
+        # ── Position scaling ──────────────────────────────────────────
+        if config.scaling_config is not None:
+            scaler = PositionScaler(config.scaling_config)
+            alpha_scores = scaler.scale_to_alpha_dict(alpha_scores, visible)
+
         # ── Portfolio construction ─────────────────────────────────────
         try:
             construction = portfolio_engine.construct(
@@ -614,9 +642,41 @@ class PortfolioBacktestEngine:
         if not construction.rebalance_triggered:
             return None
 
-        return construction.optimization.weights
+        target_weights = construction.optimization.weights
+
+        # ── Pre-trade pipeline ────────────────────────────────────────
+        if config.pre_trade_config is not None:
+            pipeline = PreTradePipeline(config.pre_trade_config)
+            pt_result = pipeline.process(
+                target_weights=target_weights,
+                current_weights=current_weights,
+                portfolio_value=portfolio_value,
+                sector_map=config.sector_map or None,
+            )
+            target_weights = pt_result.adjusted_weights
+
+        return target_weights
 
     # ── Private: validation ───────────────────────────────────────────
+
+    @staticmethod
+    def _estimate_rebalance_cost(
+        cost_model: TransactionCostModel,
+        new_weights: dict[str, float],
+        old_weights: dict[str, float],
+        portfolio_value: float,
+    ) -> float:
+        """Estimate total dollar cost of a rebalance using the cost model."""
+        total_cost = 0.0
+        all_syms = set(new_weights) | set(old_weights)
+        for sym in all_syms:
+            dw = abs(new_weights.get(sym, 0.0) - old_weights.get(sym, 0.0))
+            if dw < 1e-10:
+                continue
+            notional = dw * portfolio_value
+            est = cost_model.estimate_order_cost(symbol=sym, notional=notional)
+            total_cost += est.total_dollars
+        return total_cost
 
     @staticmethod
     def _validate(returns: pd.DataFrame) -> pd.DataFrame:

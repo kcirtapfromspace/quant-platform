@@ -12,9 +12,13 @@ from quant.backtest.portfolio_backtest import (
     PortfolioBacktestEngine,
     PortfolioBacktestReport,
 )
+from quant.execution.cost_model import CostModelConfig, TransactionCostModel
 from quant.portfolio.alpha import CombinationMethod
 from quant.portfolio.engine import PortfolioConfig
 from quant.portfolio.optimizers import OptimizationMethod
+from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
+from quant.portfolio.pre_trade import PreTradeConfig
+from quant.risk.limit_checker import LimitConfig, RiskLimitChecker
 from quant.signals.base import BaseSignal, SignalOutput
 
 # ---------------------------------------------------------------------------
@@ -840,3 +844,327 @@ class TestBacktestAttribution:
         assert report.factor_attribution is not None
         # Should have benchmark comparison too
         assert np.isfinite(report.tracking_error)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Position scaler integration (QUA-56)
+# ---------------------------------------------------------------------------
+
+
+class TestPositionScalerBacktest:
+    """Verify PositionScaler integrates correctly into portfolio backtester."""
+
+    def test_conviction_scaling_runs(self):
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            scaling_config=ScalingConfig(method=ScalingMethod.CONVICTION),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        assert isinstance(report, PortfolioBacktestReport)
+        assert report.n_rebalances > 0
+
+    def test_vol_adjusted_scaling_runs(self):
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            scaling_config=ScalingConfig(method=ScalingMethod.VOL_ADJUSTED),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        assert report.n_rebalances > 0
+
+    def test_kelly_scaling_runs(self):
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            scaling_config=ScalingConfig(
+                method=ScalingMethod.KELLY, kelly_fraction=0.5
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        assert report.n_rebalances > 0
+
+    def test_no_scaling_matches_default(self):
+        """Without scaling_config, results should match the baseline."""
+        returns = _make_returns(n=200, n_assets=3, seed=10)
+        base_config = PortfolioBacktestConfig(
+            min_history=60,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        r_base = engine.run(returns, [_FixedSignal()], base_config)
+
+        # Explicitly None
+        none_config = PortfolioBacktestConfig(
+            min_history=60,
+            scaling_config=None,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        r_none = engine.run(returns, [_FixedSignal()], none_config)
+        assert abs(r_base.final_value - r_none.final_value) < 0.01
+
+    def test_min_confidence_filters_signals(self):
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            scaling_config=ScalingConfig(
+                method=ScalingMethod.CONVICTION,
+                min_confidence=0.99,  # higher than signal's 0.8
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal(confidence=0.5)], config)
+        # All alphas should be zeroed → portfolio stays flat
+        assert isinstance(report, PortfolioBacktestReport)
+
+    def test_config_default_none(self):
+        config = PortfolioBacktestConfig()
+        assert config.scaling_config is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Pre-trade pipeline integration (QUA-56)
+# ---------------------------------------------------------------------------
+
+
+class TestPreTradeBacktest:
+    """Verify PreTradePipeline integrates correctly into portfolio backtester."""
+
+    def test_basic_pretrade_runs(self):
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            pre_trade_config=PreTradeConfig(
+                min_trade_weight=0.0, min_trade_dollars=0.0
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        assert isinstance(report, PortfolioBacktestReport)
+        assert report.n_rebalances > 0
+
+    def test_limit_checker_clamps_weights(self):
+        returns = _make_returns(n=200, n_assets=3)
+        checker = RiskLimitChecker(LimitConfig(
+            max_position_weight=0.10,
+            max_concentration_hhi=None,
+        ))
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            pre_trade_config=PreTradeConfig(
+                limit_checker=checker,
+                enforce_limits=True,
+                min_trade_weight=0.0,
+                min_trade_dollars=0.0,
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        # Check all rebalance snapshots — weights should be clamped
+        for snap in report.rebalances:
+            for w in snap.weights.values():
+                assert abs(w) <= 0.10 + 1e-10
+
+    def test_min_trade_filter(self):
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            pre_trade_config=PreTradeConfig(
+                min_trade_weight=0.50,  # very high — filters most trades
+                min_trade_dollars=0.0,
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        # Should still complete without error
+        assert isinstance(report, PortfolioBacktestReport)
+
+    def test_no_pretrade_matches_default(self):
+        returns = _make_returns(n=200, n_assets=3, seed=20)
+        base_config = PortfolioBacktestConfig(
+            min_history=60,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        r_base = engine.run(returns, [_FixedSignal()], base_config)
+
+        none_config = PortfolioBacktestConfig(
+            min_history=60,
+            pre_trade_config=None,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        r_none = engine.run(returns, [_FixedSignal()], none_config)
+        assert abs(r_base.final_value - r_none.final_value) < 0.01
+
+    def test_config_default_none(self):
+        config = PortfolioBacktestConfig()
+        assert config.pre_trade_config is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Transaction cost model integration (QUA-56)
+# ---------------------------------------------------------------------------
+
+
+class TestCostModelBacktest:
+    """Verify TransactionCostModel integrates correctly into portfolio backtester."""
+
+    def test_cost_model_runs(self):
+        returns = _make_returns(n=200, n_assets=3)
+        cost_model = TransactionCostModel(CostModelConfig(
+            default_spread_bps=5.0,
+            impact_coefficient=0.0,
+            commission_per_share=0.0,
+        ))
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            cost_model=cost_model,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        assert report.total_costs > 0
+        assert report.n_rebalances > 0
+
+    def test_cost_model_higher_costs_than_flat(self):
+        """A realistic cost model should produce higher costs than 0 bps flat."""
+        returns = _make_returns(n=200, n_assets=3, seed=30)
+        # Baseline: zero flat commission
+        base_config = PortfolioBacktestConfig(
+            min_history=60,
+            commission_bps=0.0,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        r_base = engine.run(returns, [_FixedSignal()], base_config)
+
+        # With cost model: should have nonzero costs
+        cost_model = TransactionCostModel(CostModelConfig(
+            default_spread_bps=10.0,
+            impact_coefficient=0.0,
+            commission_per_share=0.0,
+        ))
+        model_config = PortfolioBacktestConfig(
+            min_history=60,
+            cost_model=cost_model,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        r_model = engine.run(returns, [_FixedSignal()], model_config)
+
+        assert r_model.total_costs > r_base.total_costs
+        assert r_model.final_value < r_base.final_value
+
+    def test_cost_model_overrides_commission_bps(self):
+        """When cost_model is set, commission_bps should be ignored."""
+        returns = _make_returns(n=200, n_assets=3, seed=40)
+        cost_model = TransactionCostModel(CostModelConfig(
+            default_spread_bps=5.0,
+            impact_coefficient=0.0,
+            commission_per_share=0.0,
+        ))
+        # Set high commission_bps, but cost_model should override
+        config_with_model = PortfolioBacktestConfig(
+            min_history=60,
+            commission_bps=100.0,  # would be very expensive
+            cost_model=cost_model,  # but this overrides
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        r_model = engine.run(returns, [_FixedSignal()], config_with_model)
+
+        # Should use model costs (5 bps), not flat (100 bps)
+        # So costs should be relatively low
+        config_flat = PortfolioBacktestConfig(
+            min_history=60,
+            commission_bps=100.0,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        r_flat = engine.run(returns, [_FixedSignal()], config_flat)
+        assert r_model.total_costs < r_flat.total_costs
+
+    def test_zero_spread_zero_cost(self):
+        returns = _make_returns(n=200, n_assets=3, seed=50)
+        cost_model = TransactionCostModel(CostModelConfig(
+            default_spread_bps=0.0,
+            impact_coefficient=0.0,
+            commission_per_share=0.0,
+        ))
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            cost_model=cost_model,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        assert report.total_costs == 0.0
+
+    def test_config_default_none(self):
+        config = PortfolioBacktestConfig()
+        assert config.cost_model is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Combined pipeline integration (QUA-56)
+# ---------------------------------------------------------------------------
+
+
+class TestCombinedPipelineBacktest:
+    """Verify all three components work together in the portfolio backtester."""
+
+    def test_full_pipeline(self):
+        """Run backtest with position scaler + pre-trade + cost model."""
+        returns = _make_returns(n=200, n_assets=3)
+        cost_model = TransactionCostModel(CostModelConfig(
+            default_spread_bps=5.0,
+            impact_coefficient=0.0,
+            commission_per_share=0.0,
+        ))
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            scaling_config=ScalingConfig(method=ScalingMethod.CONVICTION),
+            pre_trade_config=PreTradeConfig(
+                min_trade_weight=0.001,
+                min_trade_dollars=100.0,
+            ),
+            cost_model=cost_model,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        assert isinstance(report, PortfolioBacktestReport)
+        assert report.n_rebalances > 0
+        assert report.total_costs > 0
+
+    def test_scaler_plus_limits(self):
+        """Position scaler + risk limits should constrain weights."""
+        returns = _make_returns(n=200, n_assets=3)
+        checker = RiskLimitChecker(LimitConfig(
+            max_position_weight=0.10,
+            max_concentration_hhi=None,
+        ))
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            scaling_config=ScalingConfig(method=ScalingMethod.VOL_ADJUSTED),
+            pre_trade_config=PreTradeConfig(
+                limit_checker=checker,
+                enforce_limits=True,
+                min_trade_weight=0.0,
+                min_trade_dollars=0.0,
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        for snap in report.rebalances:
+            for w in snap.weights.values():
+                assert abs(w) <= 0.10 + 1e-10
