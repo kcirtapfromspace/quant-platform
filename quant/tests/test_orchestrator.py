@@ -18,6 +18,7 @@ from quant.orchestrator import (
 )
 from quant.portfolio.constraints import PortfolioConstraints
 from quant.portfolio.engine import PortfolioConfig
+from quant.portfolio.lifecycle import HealthStatus, LifecycleConfig, LifecycleReport
 from quant.portfolio.optimizers import OptimizationMethod
 from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
 from quant.portfolio.pre_trade import PreTradeConfig
@@ -1158,3 +1159,138 @@ class TestAdaptiveCombinerIntegration:
         )
         result = orch.run_once()
         assert result.error == ""
+
+
+# ── Lifecycle integration helpers ─────────────────────────────────────────
+
+
+def _make_lifecycle_orchestrator(
+    lifecycle_config: LifecycleConfig | None = None,
+    n_sleeves: int = 2,
+    capital_weights: list[float] | None = None,
+) -> StrategyOrchestrator:
+    """Build orchestrator with lifecycle manager enabled."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    lc = lifecycle_config or LifecycleConfig(
+        drawdown_watch=0.15,
+        drawdown_degraded=0.25,
+        drawdown_critical=0.40,
+        eval_window=63,
+    )
+
+    capital_weights = capital_weights or [1.0 / n_sleeves] * n_sleeves
+    signal_names = ["alpha", "beta", "gamma", "delta"]
+    sleeves = []
+    for i in range(n_sleeves):
+        offset = (i + 1) * 0.1
+        scores = {sym: min(0.3 + offset + j * 0.05, 0.95) for j, sym in enumerate(symbols)}
+        sleeves.append(
+            StrategySleeve(
+                name=f"strategy_{signal_names[i % len(signal_names)]}",
+                signals=[StubSignal(signal_names[i % len(signal_names)], scores)],
+                capital_weight=capital_weights[i],
+                portfolio_config=PortfolioConfig(
+                    optimization_method=OptimizationMethod.RISK_PARITY,
+                    constraints=PortfolioConstraints(
+                        long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                    ),
+                ),
+            )
+        )
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        lifecycle_config=lc,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+# ── Lifecycle integration tests ──────────────────────────────────────────
+
+
+class TestLifecycleIntegration:
+    def test_lifecycle_report_attached(self):
+        """run_once should produce a LifecycleReport when lifecycle_config is set."""
+        orch = _make_lifecycle_orchestrator()
+        result = orch.run_once()
+        assert result.error == ""
+        assert result.lifecycle_report is not None
+        assert isinstance(result.lifecycle_report, LifecycleReport)
+
+    def test_lifecycle_report_has_all_sleeves(self):
+        """Report should contain health for every active sleeve."""
+        orch = _make_lifecycle_orchestrator(n_sleeves=3, capital_weights=[0.4, 0.3, 0.3])
+        result = orch.run_once()
+        report = result.lifecycle_report
+        assert report is not None
+        assert len(report.strategy_health) == 3
+
+    def test_lifecycle_none_when_not_configured(self):
+        """Without lifecycle_config, lifecycle_report should be None."""
+        orch = _make_orchestrator(n_sleeves=2)
+        result = orch.run_once()
+        assert result.lifecycle_report is None
+
+    def test_lifecycle_manager_property(self):
+        """lifecycle_manager property exposes the manager when configured."""
+        orch = _make_lifecycle_orchestrator()
+        assert orch.lifecycle_manager is not None
+        orch2 = _make_orchestrator()
+        assert orch2.lifecycle_manager is None
+
+    def test_lifecycle_accumulates_across_cycles(self):
+        """Lifecycle snapshots should persist across run_once calls."""
+        orch = _make_lifecycle_orchestrator()
+        r1 = orch.run_once()
+        r2 = orch.run_once()
+        assert r1.lifecycle_report is not None
+        assert r2.lifecycle_report is not None
+        assert orch.lifecycle_manager is not None
+        assert len(orch.lifecycle_manager.strategy_names) == 2
+
+    def test_lifecycle_recommendations_present(self):
+        """Report should include reallocation recommendations."""
+        orch = _make_lifecycle_orchestrator()
+        result = orch.run_once()
+        report = result.lifecycle_report
+        assert report is not None
+        assert len(report.recommendations) == 2
+        rec_names = {r.strategy for r in report.recommendations}
+        health_names = {h.name for h in report.strategy_health}
+        assert rec_names == health_names
+
+    def test_lifecycle_health_status_valid(self):
+        """All health statuses should be valid HealthStatus enum values."""
+        orch = _make_lifecycle_orchestrator()
+        result = orch.run_once()
+        report = result.lifecycle_report
+        assert report is not None
+        for h in report.strategy_health:
+            assert isinstance(h.status, HealthStatus)
+
+    def test_lifecycle_summary_not_empty(self):
+        """Report summary should produce readable output."""
+        orch = _make_lifecycle_orchestrator()
+        result = orch.run_once()
+        report = result.lifecycle_report
+        assert report is not None
+        summary = report.summary()
+        assert "Strategy Lifecycle Report" in summary
+        assert len(summary) > 50

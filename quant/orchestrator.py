@@ -47,6 +47,12 @@ from quant.oms.models import Order, OrderSide, OrderType
 from quant.oms.system import OrderManagementSystem
 from quant.portfolio.alpha import AlphaCombiner, CombinationMethod
 from quant.portfolio.engine import ConstructionResult, PortfolioConfig, PortfolioEngine
+from quant.portfolio.lifecycle import (
+    LifecycleConfig,
+    LifecycleManager,
+    LifecycleReport,
+    StrategySnapshot,
+)
 from quant.portfolio.position_scaler import PositionScaler, ScalingConfig
 from quant.portfolio.pre_trade import PreTradeConfig, PreTradePipeline, PreTradeResult
 from quant.risk.engine import (
@@ -155,6 +161,7 @@ class OrchestratorResult:
     sleeve_results: list[SleeveResult] = field(default_factory=list)
     combined_weights: dict[str, float] = field(default_factory=dict)
     pre_trade_result: PreTradeResult | None = None
+    lifecycle_report: LifecycleReport | None = None
     n_submitted: int = 0
     n_rejected: int = 0
     error: str = ""
@@ -179,6 +186,7 @@ class OrchestratorConfig:
     min_order_value: float = 100.0
     net_conflicting: bool = True
     pre_trade_config: PreTradeConfig | None = None
+    lifecycle_config: LifecycleConfig | None = None
     regime_detector: RegimeDetector | None = None
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
@@ -233,6 +241,11 @@ class StrategyOrchestrator:
                 self._adaptive_combiners[sleeve.name] = AdaptiveSignalCombiner(
                     sleeve.adaptive_combiner_config
                 )
+
+        # Strategy lifecycle manager (persists across cycles)
+        self._lifecycle_mgr: LifecycleManager | None = None
+        if config.lifecycle_config is not None:
+            self._lifecycle_mgr = LifecycleManager(config.lifecycle_config)
 
         # Regime state
         self._last_regime: RegimeState | None = None
@@ -306,6 +319,32 @@ class StrategyOrchestrator:
                     if not sr.error:
                         monitor.update(sr.name, sr.capital_allocated)
 
+            # ── 2c. Lifecycle evaluation ────────────────────────────────
+            lifecycle_report: LifecycleReport | None = None
+            if self._lifecycle_mgr is not None:
+                eval_window = self._config.lifecycle_config.eval_window if self._config.lifecycle_config else 63
+                returns_df = self._get_returns_history(eval_window)
+                for sr in sleeve_results:
+                    if sr.error:
+                        continue
+                    strategy_returns = self._compute_sleeve_returns(
+                        sr, returns_df
+                    )
+                    cap_w = effective_weights.get(sr.name, 0.0)
+                    self._lifecycle_mgr.update(
+                        StrategySnapshot(
+                            name=sr.name,
+                            returns_series=strategy_returns,
+                            current_weight=cap_w,
+                        )
+                    )
+                lifecycle_report = self._lifecycle_mgr.evaluate()
+                if lifecycle_report.has_critical:
+                    logger.warning(
+                        "Lifecycle: {} critical strategies detected",
+                        lifecycle_report.n_critical,
+                    )
+
             # ── 3. Combine target weights ─────────────────────────────────
             combined = self._combine_weights(sleeve_results)
 
@@ -348,6 +387,7 @@ class StrategyOrchestrator:
                 sleeve_results=sleeve_results,
                 combined_weights=combined,
                 pre_trade_result=pre_trade_result,
+                lifecycle_report=lifecycle_report,
                 n_submitted=n_submitted,
                 n_rejected=n_rejected,
             )
@@ -376,6 +416,11 @@ class StrategyOrchestrator:
     def quality_tracker(self) -> ExecutionQualityTracker | None:
         """Execution quality tracker, or None if not configured."""
         return self._config.quality_tracker
+
+    @property
+    def lifecycle_manager(self) -> LifecycleManager | None:
+        """Lifecycle manager, or None if not configured."""
+        return self._lifecycle_mgr
 
     # ── Regime-aware capital allocation ────────────────────────────────
 
@@ -702,6 +747,20 @@ class StrategyOrchestrator:
         if self._feature_provider is not None:
             return self._feature_provider(symbol, signal)
         return {}
+
+    @staticmethod
+    def _compute_sleeve_returns(
+        sleeve_result: SleeveResult, returns_df: pd.DataFrame
+    ) -> pd.Series:
+        """Approximate strategy returns from asset returns × target weights."""
+        if returns_df.empty or not sleeve_result.target_weights:
+            return pd.Series(dtype=float)
+        weights = sleeve_result.target_weights
+        common = [s for s in weights if s in returns_df.columns]
+        if not common:
+            return pd.Series(dtype=float)
+        w = pd.Series({s: weights[s] for s in common})
+        return returns_df[common].mul(w).sum(axis=1)
 
     def _build_portfolio_state(self, portfolio_value: float) -> PortfolioState:
         positions = self._oms.get_all_positions()
