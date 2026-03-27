@@ -282,7 +282,7 @@ export function BacktestPage() {
           </div>
 
           {/* Metrics */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
             <Metric
               label="Total Return"
               value={fmtPct(result.totalReturn)}
@@ -312,6 +312,11 @@ export function BacktestPage() {
               label="Profit Factor"
               value={result.profitFactor >= 99 ? '∞' : fmtNum(result.profitFactor, 2)}
               positive={result.profitFactor >= 1}
+            />
+            <Metric
+              label="Trades"
+              value={String(result.tradeCount)}
+              positive={null}
             />
           </div>
 
