@@ -1,6 +1,6 @@
 # Quant Infrastructure
 
-Quantitative trading platform — data ingestion, signal processing, risk engine, OMS, and backtesting.
+Quantitative trading platform — data ingestion, signal processing, risk engine, portfolio construction, OMS, and backtesting.
 
 ## Architecture
 
@@ -11,6 +11,7 @@ quant/
 ├── features/          # feature engine with registry and Redis cache
 ├── signals/           # signal registry and strategy framework
 ├── risk/              # position sizing, exposure limits, circuit breaker
+├── portfolio/         # alpha combination, portfolio optimisation, rebalancing
 ├── oms/               # order management system + broker adapters
 ├── backtest/          # vectorised backtesting engine (Rust core)
 ├── monitoring/        # Prometheus metrics instrumentation
