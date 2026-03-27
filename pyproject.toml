@@ -53,6 +53,7 @@ monitoring = [
 
 [project.scripts]
 quant-ingest = "quant.scripts.ingest_eod:main"
+quant-run = "quant.scripts.run_strategy:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

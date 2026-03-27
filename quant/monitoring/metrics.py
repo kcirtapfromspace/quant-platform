@@ -12,13 +12,12 @@ from loguru import logger
 
 try:
     from prometheus_client import (
+        REGISTRY,
         Counter,
         Gauge,
         Histogram,
-        start_http_server,
         push_to_gateway,
-        CollectorRegistry,
-        REGISTRY,
+        start_http_server,
     )
     _PROMETHEUS_AVAILABLE = True
 except ImportError:
@@ -160,6 +159,56 @@ CIRCUIT_BREAKER_TRIPPED = _make_gauge(
 DRAWDOWN_CURRENT = _make_gauge(
     "quant_drawdown_current",
     "Current portfolio drawdown as a fraction of peak value (0–1).",
+)
+
+# ── Strategy runner metrics ──────────────────────────────────────────────────
+
+RUNNER_RUNS_TOTAL = _make_counter(
+    "quant_runner_runs_total",
+    "Total strategy runner execution cycles.",
+    labelnames=["status"],  # idle | error
+)
+
+RUNNER_RUN_DURATION = _make_histogram(
+    "quant_runner_run_duration_seconds",
+    "Duration of a single runner.run_once() cycle.",
+    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0),
+)
+
+RUNNER_TRADES_SUBMITTED = _make_counter(
+    "quant_runner_trades_submitted_total",
+    "Total trades submitted by the strategy runner.",
+)
+
+RUNNER_TRADES_REJECTED = _make_counter(
+    "quant_runner_trades_rejected_total",
+    "Total trades rejected by the risk engine during runner execution.",
+)
+
+RUNNER_PORTFOLIO_VALUE = _make_gauge(
+    "quant_runner_portfolio_value_dollars",
+    "Portfolio value at the end of the last runner cycle.",
+)
+
+RUNNER_PORTFOLIO_VOLATILITY = _make_gauge(
+    "quant_runner_portfolio_volatility",
+    "Annualised portfolio volatility from the last optimisation.",
+)
+
+RUNNER_TURNOVER = _make_gauge(
+    "quant_runner_turnover",
+    "Portfolio turnover from the last rebalance (0–2 scale).",
+)
+
+RUNNER_LAST_RUN_TIMESTAMP = _make_gauge(
+    "quant_runner_last_run_timestamp_seconds",
+    "Unix timestamp of the last completed runner cycle.",
+)
+
+RUNNER_PREFLIGHT_FAILURES = _make_counter(
+    "quant_runner_preflight_failures_total",
+    "Total pre-flight check failures that blocked a runner cycle.",
+    labelnames=["check"],  # broker_connected | sufficient_cash | market_open
 )
 
 
