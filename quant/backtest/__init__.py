@@ -37,14 +37,24 @@ from quant.backtest.portfolio_backtest import (
 )
 from quant.backtest.report import BacktestReport
 from quant.backtest.strategy import Strategy
+from quant.backtest.walk_forward import (
+    FoldResult,
+    WalkForwardAnalyzer,
+    WalkForwardConfig,
+    WalkForwardResult,
+)
 
 __all__ = [
     "BacktestConfig",
     "BacktestEngine",
     "BacktestReport",
+    "FoldResult",
     "PortfolioBacktestConfig",
     "PortfolioBacktestEngine",
     "PortfolioBacktestReport",
     "RebalanceSnapshot",
     "Strategy",
+    "WalkForwardAnalyzer",
+    "WalkForwardConfig",
+    "WalkForwardResult",
 ]
