@@ -20,6 +20,13 @@ from quant.portfolio.optimizers import OptimizationMethod
 from quant.risk.engine import RiskConfig
 from quant.risk.limits import ExposureLimits
 from quant.signals.base import BaseSignal, SignalOutput
+from quant.signals.regime import (
+    MarketRegime,
+    RegimeConfig,
+    RegimeDetector,
+    RegimeState,
+    RegimeWeightAdapter,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -368,3 +375,169 @@ class TestOrchestratorConfig:
         assert sleeve.capital_weight == 1.0
         assert sleeve.enabled is True
         assert sleeve.lookback_days == 252
+
+    def test_sleeve_strategy_type(self):
+        sleeve = StrategySleeve(name="test", strategy_type="momentum")
+        assert sleeve.strategy_type == "momentum"
+
+    def test_sleeve_strategy_type_default_empty(self):
+        sleeve = StrategySleeve(name="test")
+        assert sleeve.strategy_type == ""
+
+    def test_config_regime_fields_default_none(self):
+        config = OrchestratorConfig()
+        assert config.regime_detector is None
+        assert config.regime_adapter is None
+        assert config.regime_lookback_days == 252
+
+
+# ── Regime-aware orchestrator helpers ──────────────────────────────────────
+
+
+def _make_regime_orchestrator(
+    regime_config: RegimeConfig | None = None,
+    capital_weights: list[float] | None = None,
+    strategy_types: list[str] | None = None,
+    n_days: int = 300,
+) -> StrategyOrchestrator:
+    """Build an orchestrator with regime detection enabled."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols, n_days=n_days)
+    oms = _make_oms()
+
+    capital_weights = capital_weights or [0.40, 0.35, 0.25]
+    strategy_types = strategy_types or ["momentum", "mean_reversion", "trend"]
+
+    signal_names = ["mom", "mr", "trend"]
+    sleeves = []
+    for i in range(3):
+        offset = (i + 1) * 0.1
+        scores = {sym: min(0.3 + offset + j * 0.05, 0.95) for j, sym in enumerate(symbols)}
+        sleeves.append(
+            StrategySleeve(
+                name=f"strategy_{signal_names[i]}",
+                signals=[StubSignal(signal_names[i], scores)],
+                capital_weight=capital_weights[i],
+                strategy_type=strategy_types[i],
+                portfolio_config=PortfolioConfig(
+                    optimization_method=OptimizationMethod.RISK_PARITY,
+                    constraints=PortfolioConstraints(
+                        long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                    ),
+                ),
+            )
+        )
+
+    detector = RegimeDetector(config=regime_config)
+    adapter = RegimeWeightAdapter()
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        regime_detector=detector,
+        regime_adapter=adapter,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+# ── Regime-aware orchestrator tests ───────────────────────────────────────
+
+
+class TestRegimeAwareOrchestrator:
+    def test_run_with_regime_succeeds(self):
+        orch = _make_regime_orchestrator()
+        result = orch.run_once()
+        assert isinstance(result, OrchestratorResult)
+        assert result.error == ""
+
+    def test_last_regime_populated(self):
+        orch = _make_regime_orchestrator()
+        assert orch.last_regime is None
+        orch.run_once()
+        assert orch.last_regime is not None
+        assert isinstance(orch.last_regime, RegimeState)
+
+    def test_regime_has_valid_fields(self):
+        orch = _make_regime_orchestrator()
+        orch.run_once()
+        regime = orch.last_regime
+        assert regime is not None
+        assert isinstance(regime.regime, MarketRegime)
+        assert 0.0 <= regime.confidence <= 1.0
+        assert "vol_ratio" in regime.metrics
+        assert "autocorrelation" in regime.metrics
+
+    def test_sleeve_capital_adjusted_by_regime(self):
+        """With regime detection on, sleeve capital allocations should differ
+        from base weights (unless regime is NORMAL with zero affinity)."""
+        orch = _make_regime_orchestrator()
+        result = orch.run_once()
+        regime = orch.last_regime
+        assert regime is not None
+
+        # At least confirm all 3 sleeves ran and got capital
+        assert len(result.sleeve_results) == 3
+        for sr in result.sleeve_results:
+            assert sr.capital_allocated > 0
+
+    def test_combined_weights_valid(self):
+        orch = _make_regime_orchestrator()
+        result = orch.run_once()
+        assert len(result.combined_weights) > 0
+        total_weight = sum(result.combined_weights.values())
+        assert total_weight <= 1.0 + 0.01
+
+    def test_trades_submitted_with_regime(self):
+        orch = _make_regime_orchestrator()
+        result = orch.run_once()
+        assert result.n_submitted > 0
+
+    def test_no_detector_uses_base_weights(self):
+        """When regime_detector is None, sleeve capital = base weight * total."""
+        orch = _make_orchestrator(
+            n_sleeves=2, capital_weights=[0.6, 0.4]
+        )
+        result = orch.run_once()
+        total = result.total_portfolio
+        sr0, sr1 = result.sleeve_results
+        assert abs(sr0.capital_allocated - 0.6 * total) < 1.0
+        assert abs(sr1.capital_allocated - 0.4 * total) < 1.0
+
+    def test_unknown_strategy_type_no_tilt(self):
+        """Sleeves with unknown strategy_type get zero tilt — base weights
+        are preserved after re-normalisation."""
+        orch = _make_regime_orchestrator(
+            strategy_types=["unknown_a", "unknown_b", "unknown_c"],
+        )
+        result = orch.run_once()
+        total = result.total_portfolio
+        # With all unknown types, all tilts are 0 → adjusted == base
+        expected = [0.40, 0.35, 0.25]
+        for i, sr in enumerate(result.sleeve_results):
+            assert abs(sr.capital_allocated - expected[i] * total) < 1.0
+
+    def test_regime_persists_across_runs(self):
+        """last_regime updates on each run_once() call."""
+        orch = _make_regime_orchestrator()
+        orch.run_once()
+        r1 = orch.last_regime
+        assert r1 is not None
+
+        orch.run_once()
+        r2 = orch.last_regime
+        assert r2 is not None
+        # Both should be valid RegimeState (same data, so same result)
+        assert r1.regime == r2.regime

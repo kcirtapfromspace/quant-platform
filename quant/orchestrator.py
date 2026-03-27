@@ -55,6 +55,7 @@ from quant.risk.engine import (
     RiskEngine,
 )
 from quant.signals.base import BaseSignal, SignalOutput
+from quant.signals.regime import RegimeDetector, RegimeState, RegimeWeightAdapter
 
 
 def _utcnow() -> datetime:
@@ -91,6 +92,7 @@ class StrategySleeve:
     name: str
     signals: list[BaseSignal] = field(default_factory=list)
     capital_weight: float = 1.0
+    strategy_type: str = ""
     portfolio_config: PortfolioConfig = field(default_factory=PortfolioConfig)
     risk_config: RiskConfig | None = None
     combination_method: CombinationMethod = CombinationMethod.EQUAL_WEIGHT
@@ -162,6 +164,9 @@ class OrchestratorConfig:
     sector_map: dict[str, str] = field(default_factory=dict)
     min_order_value: float = 100.0
     net_conflicting: bool = True
+    regime_detector: RegimeDetector | None = None
+    regime_adapter: RegimeWeightAdapter | None = None
+    regime_lookback_days: int = 252
 
 
 class StrategyOrchestrator:
@@ -204,6 +209,9 @@ class StrategyOrchestrator:
         # Top-level risk engine for aggregate position limits
         self._risk_engine = RiskEngine(config.risk_config)
 
+        # Regime state
+        self._last_regime: RegimeState | None = None
+
         self._validate_sleeve_weights()
 
     def _validate_sleeve_weights(self) -> None:
@@ -230,21 +238,25 @@ class StrategyOrchestrator:
             total_value = self._get_portfolio_value()
             current_weights = self._get_current_weights(total_value)
 
-            # ── 1. Run each sleeve ────────────────────────────────────────
+            # ── 1. Detect regime and adjust capital weights ──────────────
+            effective_weights = self._regime_adjusted_weights()
+
+            # ── 2. Run each sleeve ────────────────────────────────────────
             sleeve_results: list[SleeveResult] = []
             for sleeve in self._sleeves:
                 if not sleeve.enabled:
                     continue
-                sr = self._run_sleeve(sleeve, total_value, now)
+                cap_w = effective_weights.get(sleeve.name, sleeve.capital_weight)
+                sr = self._run_sleeve(sleeve, total_value, now, capital_weight_override=cap_w)
                 sleeve_results.append(sr)
 
-            # ── 2. Combine target weights ─────────────────────────────────
+            # ── 3. Combine target weights ─────────────────────────────────
             combined = self._combine_weights(sleeve_results)
 
-            # ── 3. Compute net trades ─────────────────────────────────────
+            # ── 4. Compute net trades ─────────────────────────────────────
             trades = self._compute_trades(current_weights, combined, total_value)
 
-            # ── 4. Risk validate and execute ──────────────────────────────
+            # ── 5. Risk validate and execute ──────────────────────────────
             portfolio_state = self._build_portfolio_state(total_value)
             n_submitted = 0
             n_rejected = 0
@@ -275,6 +287,70 @@ class StrategyOrchestrator:
         self._log_result(result)
         return result
 
+    @property
+    def last_regime(self) -> RegimeState | None:
+        """Most recently detected regime state, or None if not yet run."""
+        return self._last_regime
+
+    # ── Regime-aware capital allocation ────────────────────────────────
+
+    def _regime_adjusted_weights(self) -> dict[str, float]:
+        """Detect regime and return adjusted sleeve capital weights.
+
+        If no regime detector is configured, returns the base weights
+        unchanged.
+
+        Returns:
+            ``{sleeve_name: adjusted_capital_weight}``.
+        """
+        detector = self._config.regime_detector
+        adapter = self._config.regime_adapter
+        if detector is None or adapter is None:
+            return {s.name: s.capital_weight for s in self._sleeves if s.enabled}
+
+        # Get returns for regime detection
+        returns_df = self._get_returns_history(self._config.regime_lookback_days)
+        if returns_df.empty:
+            return {s.name: s.capital_weight for s in self._sleeves if s.enabled}
+
+        # Convert DataFrame to 2D list for the pure-Python detector
+        returns_2d: list[list[float]] = []
+        for _, row in returns_df.iterrows():
+            returns_2d.append([float(v) if not pd.isna(v) else 0.0 for v in row])
+
+        if len(returns_2d) < 10:
+            return {s.name: s.capital_weight for s in self._sleeves if s.enabled}
+
+        regime = detector.detect(returns=returns_2d)
+        self._last_regime = regime
+
+        logger.info(
+            "Orchestrator: regime={} confidence={:.2f} (vol={}, trend={}, corr={})",
+            regime.regime.value,
+            regime.confidence,
+            regime.vol_regime.value,
+            regime.trend_regime.value,
+            regime.corr_regime.value,
+        )
+
+        # Build base weights and strategy type mapping
+        base_weights = {s.name: s.capital_weight for s in self._sleeves if s.enabled}
+        strategy_types = {s.name: s.strategy_type for s in self._sleeves if s.enabled}
+
+        adjusted = adapter.adapt(regime, base_weights, strategy_types)
+
+        # Log adjustments
+        for name in base_weights:
+            base = base_weights[name]
+            adj = adjusted.get(name, base)
+            if abs(adj - base) > 0.001:
+                logger.info(
+                    "  sleeve '{}': {:.1%} → {:.1%} ({:+.1%})",
+                    name, base, adj, adj - base,
+                )
+
+        return adjusted
+
     # ── Sleeve execution ─────────────────────────────────────────────────
 
     def _run_sleeve(
@@ -282,9 +358,12 @@ class StrategyOrchestrator:
         sleeve: StrategySleeve,
         total_value: float,
         timestamp: datetime,
+        *,
+        capital_weight_override: float | None = None,
     ) -> SleeveResult:
         """Run a single strategy sleeve and return its target weights."""
-        sleeve_capital = total_value * sleeve.capital_weight
+        cap_w = capital_weight_override if capital_weight_override is not None else sleeve.capital_weight
+        sleeve_capital = total_value * cap_w
 
         try:
             # Compute signals
@@ -312,7 +391,7 @@ class StrategyOrchestrator:
             target_weights: dict[str, float] = {}
             if construction.rebalance_triggered:
                 for sym, w in construction.optimization.weights.items():
-                    target_weights[sym] = w * sleeve.capital_weight
+                    target_weights[sym] = w * cap_w
 
             return SleeveResult(
                 name=sleeve.name,
