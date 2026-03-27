@@ -22,6 +22,7 @@ from quant.portfolio.lifecycle import HealthStatus, LifecycleConfig, LifecycleRe
 from quant.portfolio.optimizers import OptimizationMethod
 from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
 from quant.portfolio.pre_trade import PreTradeConfig
+from quant.risk.circuit_breaker import DrawdownCircuitBreaker
 from quant.risk.engine import RiskConfig
 from quant.risk.limit_checker import LimitConfig, RiskLimitChecker
 from quant.risk.limits import ExposureLimits
@@ -1406,3 +1407,120 @@ class TestLifecycleReallocation:
             assert result.error == ""
         assert orch.lifecycle_weights is not None
         assert len(orch.lifecycle_weights) == 2
+
+
+# ── Circuit breaker integration helpers ──────────────────────────────────
+
+
+def _make_cb_orchestrator(
+    threshold: float = 0.10,
+    initial_cash: float = 1_000_000,
+) -> StrategyOrchestrator:
+    """Build orchestrator with circuit breaker enabled."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms(initial_cash=initial_cash)
+
+    sleeves = [
+        StrategySleeve(
+            name="strategy_alpha",
+            signals=[StubSignal("alpha", dict.fromkeys(SYMBOLS, 0.5))],
+            capital_weight=1.0,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+    ]
+
+    cb = DrawdownCircuitBreaker(max_drawdown_threshold=threshold)
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        circuit_breaker=cb,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+# ── Circuit breaker integration tests ────────────────────────────────────
+
+
+class TestCircuitBreakerIntegration:
+    def test_cb_not_tripped_normal_operation(self):
+        """Circuit breaker should not trip under normal conditions."""
+        orch = _make_cb_orchestrator(threshold=0.50)
+        result = orch.run_once()
+        assert result.error == ""
+        assert not result.circuit_breaker_tripped
+        assert result.n_submitted > 0
+
+    def test_cb_property_exposes_breaker(self):
+        """circuit_breaker property should expose the configured breaker."""
+        orch = _make_cb_orchestrator()
+        assert orch.circuit_breaker is not None
+        orch2 = _make_orchestrator()
+        assert orch2.circuit_breaker is None
+
+    def test_cb_tripped_halts_trading(self):
+        """When pre-tripped, no trades should be submitted."""
+        orch = _make_cb_orchestrator(threshold=0.10)
+        # Pre-trip the breaker by simulating a large drawdown
+        cb = orch.circuit_breaker
+        assert cb is not None
+        cb.update(2_000_000)  # Set peak high
+        cb.update(1_500_000)  # 25% drawdown > 10% threshold
+        assert cb.is_tripped()
+
+        result = orch.run_once()
+        assert result.circuit_breaker_tripped
+        assert result.n_submitted == 0
+        assert result.n_rejected == 0
+        assert len(result.sleeve_results) == 0
+
+    def test_cb_reset_allows_trading(self):
+        """After manual reset with peak cleared, trading should resume."""
+        orch = _make_cb_orchestrator(threshold=0.10)
+        cb = orch.circuit_breaker
+        assert cb is not None
+        cb.update(2_000_000)
+        cb.update(1_500_000)
+        assert cb.is_tripped()
+
+        cb.reset()
+        cb._peak_value = 0.0  # Clear artificial peak
+        result = orch.run_once()
+        assert not result.circuit_breaker_tripped
+        assert result.n_submitted > 0
+
+    def test_cb_false_when_not_configured(self):
+        """circuit_breaker_tripped should be False when no breaker is set."""
+        orch = _make_orchestrator()
+        result = orch.run_once()
+        assert not result.circuit_breaker_tripped
+
+    def test_cb_multiple_cycles_tracks_peak(self):
+        """Circuit breaker should track portfolio peak across cycles."""
+        orch = _make_cb_orchestrator(threshold=0.50)
+        r1 = orch.run_once()
+        r2 = orch.run_once()
+        assert not r1.circuit_breaker_tripped
+        assert not r2.circuit_breaker_tripped
+        cb = orch.circuit_breaker
+        assert cb is not None
+        assert cb._peak_value > 0

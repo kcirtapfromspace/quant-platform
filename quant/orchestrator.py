@@ -55,6 +55,7 @@ from quant.portfolio.lifecycle import (
 )
 from quant.portfolio.position_scaler import PositionScaler, ScalingConfig
 from quant.portfolio.pre_trade import PreTradeConfig, PreTradePipeline, PreTradeResult
+from quant.risk.circuit_breaker import DrawdownCircuitBreaker
 from quant.risk.engine import (
     Order as RiskOrder,
 )
@@ -162,6 +163,7 @@ class OrchestratorResult:
     combined_weights: dict[str, float] = field(default_factory=dict)
     pre_trade_result: PreTradeResult | None = None
     lifecycle_report: LifecycleReport | None = None
+    circuit_breaker_tripped: bool = False
     n_submitted: int = 0
     n_rejected: int = 0
     error: str = ""
@@ -191,6 +193,7 @@ class OrchestratorConfig:
     regime_detector: RegimeDetector | None = None
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
+    circuit_breaker: DrawdownCircuitBreaker | None = None
     strategy_monitor: StrategyMonitor | None = None
     quality_tracker: ExecutionQualityTracker | None = None
 
@@ -277,6 +280,20 @@ class StrategyOrchestrator:
         try:
             total_value = self._get_portfolio_value()
             current_weights = self._get_current_weights(total_value)
+
+            # ── 0. Circuit breaker check ───────────────────────────────
+            cb = self._config.circuit_breaker
+            if cb is not None:
+                approved, reason = cb.check(total_value)
+                if not approved:
+                    logger.warning("Orchestrator: {}", reason)
+                    result = OrchestratorResult(
+                        timestamp=now,
+                        total_portfolio=total_value,
+                        circuit_breaker_tripped=True,
+                    )
+                    self._log_result(result)
+                    return result
 
             # ── 1. Detect regime and adjust capital weights ──────────────
             effective_weights = self._regime_adjusted_weights()
@@ -449,6 +466,11 @@ class StrategyOrchestrator:
     def lifecycle_weights(self) -> dict[str, float] | None:
         """Recommended weights from the last lifecycle evaluation, or None."""
         return self._lifecycle_weights
+
+    @property
+    def circuit_breaker(self) -> DrawdownCircuitBreaker | None:
+        """Circuit breaker, or None if not configured."""
+        return self._config.circuit_breaker
 
     # ── Regime-aware capital allocation ────────────────────────────────
 
