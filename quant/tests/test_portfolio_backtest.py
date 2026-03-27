@@ -19,6 +19,7 @@ from quant.portfolio.optimizers import OptimizationMethod
 from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
 from quant.portfolio.pre_trade import PreTradeConfig
 from quant.risk.limit_checker import LimitConfig, RiskLimitChecker
+from quant.signals.adaptive_combiner import AdaptiveCombinerConfig
 from quant.signals.base import BaseSignal, SignalOutput
 
 # ---------------------------------------------------------------------------
@@ -1168,3 +1169,102 @@ class TestCombinedPipelineBacktest:
         for snap in report.rebalances:
             for w in snap.weights.values():
                 assert abs(w) <= 0.10 + 1e-10
+
+
+# ---------------------------------------------------------------------------
+# Tests: Adaptive signal combiner integration (QUA-57)
+# ---------------------------------------------------------------------------
+
+
+class _NamedSignal(BaseSignal):
+    """Signal with a specific name and fixed score."""
+
+    def __init__(self, name: str, score: float = 0.5, confidence: float = 0.8):
+        self._name = name
+        self._score = score
+        self._confidence = confidence
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def required_features(self) -> list[str]:
+        return ["returns"]
+
+    def compute(
+        self, symbol: str, features: dict[str, pd.Series], timestamp: datetime
+    ) -> SignalOutput:
+        return SignalOutput(
+            symbol=symbol,
+            timestamp=timestamp,
+            score=self._score,
+            confidence=self._confidence,
+            target_position=self._score * self._confidence,
+        )
+
+
+class TestAdaptiveCombinerBacktest:
+    """Verify AdaptiveSignalCombiner integrates into portfolio backtester."""
+
+    def test_adaptive_combiner_runs(self):
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            adaptive_combiner_config=AdaptiveCombinerConfig(
+                min_ic_periods=3, shrinkage=0.3
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        signals = [_NamedSignal("alpha", 0.6), _NamedSignal("beta", 0.4)]
+        report = engine.run(returns, signals, config)
+        assert isinstance(report, PortfolioBacktestReport)
+        assert report.n_rebalances > 0
+
+    def test_adaptive_combiner_with_single_signal(self):
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            adaptive_combiner_config=AdaptiveCombinerConfig(
+                min_ic_periods=3, shrinkage=0.5
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_NamedSignal("solo")], config)
+        assert report.n_rebalances > 0
+
+    def test_no_adaptive_config_uses_static(self):
+        returns = _make_returns(n=200, n_assets=3, seed=60)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+        assert report.n_rebalances > 0
+
+    def test_adaptive_with_scaling_and_pretrade(self):
+        """Full pipeline: adaptive + scaler + pre-trade."""
+        returns = _make_returns(n=200, n_assets=3)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            adaptive_combiner_config=AdaptiveCombinerConfig(
+                min_ic_periods=3, shrinkage=0.3
+            ),
+            scaling_config=ScalingConfig(method=ScalingMethod.CONVICTION),
+            pre_trade_config=PreTradeConfig(
+                min_trade_weight=0.001, min_trade_dollars=100.0
+            ),
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        signals = [_NamedSignal("alpha", 0.7), _NamedSignal("beta", 0.3)]
+        report = engine.run(returns, signals, config)
+        assert isinstance(report, PortfolioBacktestReport)
+        assert report.n_rebalances > 0
+
+    def test_config_default_none(self):
+        config = PortfolioBacktestConfig()
+        assert config.adaptive_combiner_config is None

@@ -56,6 +56,7 @@ from quant.portfolio.engine import PortfolioConfig, PortfolioEngine
 from quant.portfolio.factor_attribution import FactorAttributionReport, FactorAttributor
 from quant.portfolio.position_scaler import PositionScaler, ScalingConfig
 from quant.portfolio.pre_trade import PreTradeConfig, PreTradePipeline
+from quant.signals.adaptive_combiner import AdaptiveCombinerConfig, AdaptiveSignalCombiner
 from quant.signals.base import BaseSignal, SignalOutput
 
 # ---------------------------------------------------------------------------
@@ -76,6 +77,9 @@ class PortfolioBacktestConfig:
         portfolio_config: Portfolio construction / optimisation settings.
         combination_method: How to combine signal outputs into alpha.
         signal_weights: Static weights for STATIC_WEIGHT combination.
+        adaptive_combiner_config: Config for IC-adaptive signal combination.
+            When set, overrides combination_method with adaptive IC-weighted
+            combination that learns from recent signal performance.
         scaling_config: Position scaling config (conviction / vol / Kelly).
             None to skip (raw alphas go directly to optimizer).
         pre_trade_config: Pre-trade pipeline config (risk limits, cost filter,
@@ -96,6 +100,7 @@ class PortfolioBacktestConfig:
     portfolio_config: PortfolioConfig = field(default_factory=PortfolioConfig)
     combination_method: CombinationMethod = CombinationMethod.EQUAL_WEIGHT
     signal_weights: dict[str, float] | None = None
+    adaptive_combiner_config: AdaptiveCombinerConfig | None = None
     scaling_config: ScalingConfig | None = None
     pre_trade_config: PreTradeConfig | None = None
     cost_model: TransactionCostModel | None = None
@@ -294,6 +299,11 @@ class PortfolioBacktestEngine:
             method=config.combination_method,
             weights=config.signal_weights,
         )
+        adaptive_combiner: AdaptiveSignalCombiner | None = None
+        if config.adaptive_combiner_config is not None:
+            adaptive_combiner = AdaptiveSignalCombiner(
+                config.adaptive_combiner_config
+            )
         portfolio_engine = PortfolioEngine(config.portfolio_config)
         commission_rate = config.commission_bps / 10_000
 
@@ -348,6 +358,7 @@ class PortfolioBacktestEngine:
                     timestamp=dt,
                     signals=signals,
                     combiner=combiner,
+                    adaptive_combiner=adaptive_combiner,
                     portfolio_engine=portfolio_engine,
                     current_weights=weights,
                     portfolio_value=portfolio_value,
@@ -557,6 +568,7 @@ class PortfolioBacktestEngine:
         timestamp: datetime,
         signals: list[BaseSignal],
         combiner: AlphaCombiner,
+        adaptive_combiner: AdaptiveSignalCombiner | None,
         portfolio_engine: PortfolioEngine,
         current_weights: dict[str, float],
         portfolio_value: float,
@@ -617,7 +629,25 @@ class PortfolioBacktestEngine:
             return None
 
         # ── Combine into alpha ─────────────────────────────────────────
-        alpha_scores = combiner.combine_universe(ts, universe_signals)
+        if adaptive_combiner is not None:
+            # Update IC history with the most recent day's returns
+            last_returns = visible.iloc[-1]
+            signal_scores: dict[str, pd.Series] = {}
+            for sym, sig_list in universe_signals.items():
+                for sig in sig_list:
+                    sig_name = sig.metadata.get("signal_name", "unknown")
+                    if sig_name not in signal_scores:
+                        signal_scores[sig_name] = pd.Series(dtype=float)
+                    signal_scores[sig_name] = pd.concat([
+                        signal_scores[sig_name],
+                        pd.Series([sig.score], index=[sym]),
+                    ])
+            adaptive_combiner.update(signal_scores, last_returns, ts)
+            alpha_scores = adaptive_combiner.combine_universe(
+                ts, universe_signals
+            )
+        else:
+            alpha_scores = combiner.combine_universe(ts, universe_signals)
 
         # ── Position scaling ──────────────────────────────────────────
         if config.scaling_config is not None:

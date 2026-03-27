@@ -58,6 +58,7 @@ from quant.risk.engine import (
     RiskEngine,
 )
 from quant.risk.strategy_monitor import StrategyMonitor
+from quant.signals.adaptive_combiner import AdaptiveCombinerConfig, AdaptiveSignalCombiner
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.regime import RegimeDetector, RegimeState, RegimeWeightAdapter
 
@@ -88,6 +89,10 @@ class StrategySleeve:
         risk_config:        Risk engine config for this sleeve.
         combination_method: How to combine this sleeve's signal outputs.
         signal_weights:     Static weights for STATIC_WEIGHT combination.
+        adaptive_combiner_config: Config for IC-adaptive signal combination.
+                            When set, overrides combination_method with adaptive
+                            IC-weighted combination that learns from recent
+                            signal performance.
         scaling_config:     Position scaling config (conviction / vol / Kelly).
                             None to skip scaling.
         sector_map:         {symbol: sector} for risk checks.
@@ -103,6 +108,7 @@ class StrategySleeve:
     risk_config: RiskConfig | None = None
     combination_method: CombinationMethod = CombinationMethod.EQUAL_WEIGHT
     signal_weights: dict[str, float] | None = None
+    adaptive_combiner_config: AdaptiveCombinerConfig | None = None
     scaling_config: ScalingConfig | None = None
     sector_map: dict[str, str] = field(default_factory=dict)
     lookback_days: int = 252
@@ -219,6 +225,14 @@ class StrategyOrchestrator:
 
         # Top-level risk engine for aggregate position limits
         self._risk_engine = RiskEngine(config.risk_config)
+
+        # Per-sleeve adaptive combiners (stateful — persist across cycles)
+        self._adaptive_combiners: dict[str, AdaptiveSignalCombiner] = {}
+        for sleeve in sleeves:
+            if sleeve.adaptive_combiner_config is not None:
+                self._adaptive_combiners[sleeve.name] = AdaptiveSignalCombiner(
+                    sleeve.adaptive_combiner_config
+                )
 
         # Regime state
         self._last_regime: RegimeState | None = None
@@ -441,14 +455,39 @@ class StrategyOrchestrator:
             universe_signals = self._compute_signals(sleeve, timestamp)
 
             # Combine into alpha
-            combiner = AlphaCombiner(
-                method=sleeve.combination_method,
-                weights=sleeve.signal_weights,
-            )
-            alpha_scores = combiner.combine_universe(timestamp, universe_signals)
+            returns_history = self._get_returns_history(sleeve.lookback_days)
+            adaptive = self._adaptive_combiners.get(sleeve.name)
+
+            if adaptive is not None:
+                # Update IC history with most recent returns
+                if not returns_history.empty:
+                    last_returns = returns_history.iloc[-1]
+                    signal_scores: dict[str, pd.Series] = {}
+                    for sym, sig_list in universe_signals.items():
+                        for sig in sig_list:
+                            sig_name = sig.metadata.get("signal_name", "unknown")
+                            if sig_name not in signal_scores:
+                                signal_scores[sig_name] = pd.Series(dtype=float)
+                            signal_scores[sig_name] = pd.concat([
+                                signal_scores[sig_name],
+                                pd.Series([sig.score], index=[sym]),
+                            ])
+                    adaptive.update(signal_scores, last_returns, timestamp)
+
+                # Combine using adaptive IC-weighted method
+                alpha_scores = adaptive.combine_universe(
+                    timestamp, universe_signals
+                )
+            else:
+                combiner = AlphaCombiner(
+                    method=sleeve.combination_method,
+                    weights=sleeve.signal_weights,
+                )
+                alpha_scores = combiner.combine_universe(
+                    timestamp, universe_signals
+                )
 
             # Position scaling (conviction / vol-adjusted / Kelly)
-            returns_history = self._get_returns_history(sleeve.lookback_days)
             if sleeve.scaling_config is not None:
                 scaler = PositionScaler(sleeve.scaling_config)
                 alpha_scores = scaler.scale_to_alpha_dict(

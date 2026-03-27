@@ -25,6 +25,7 @@ from quant.risk.engine import RiskConfig
 from quant.risk.limit_checker import LimitConfig, RiskLimitChecker
 from quant.risk.limits import ExposureLimits
 from quant.risk.strategy_monitor import MonitorConfig, StrategyMonitor
+from quant.signals.adaptive_combiner import AdaptiveCombinerConfig
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.regime import (
     MarketRegime,
@@ -1032,3 +1033,128 @@ class TestPreTradePipelineIntegration:
         if result.pre_trade_result is not None:
             for sym in result.combined_weights:
                 assert abs(result.combined_weights[sym]) <= 0.01 + 1e-10
+
+
+# ── Tests: Adaptive combiner integration ───────────────────────────────────
+
+
+def _make_adaptive_orchestrator(
+    adaptive_config: AdaptiveCombinerConfig | None = None,
+) -> StrategyOrchestrator:
+    """Build orchestrator with adaptive signal combination on a sleeve."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    ac = adaptive_config or AdaptiveCombinerConfig(
+        ic_lookback=50, min_ic_periods=5, shrinkage=0.3
+    )
+
+    sleeves = [
+        StrategySleeve(
+            name="adaptive_sleeve",
+            signals=[
+                StubSignal("sig_a", {"AAPL": 0.8, "GOOG": 0.3, "MSFT": 0.5}),
+                StubSignal("sig_b", {"AAPL": 0.4, "GOOG": 0.7, "MSFT": 0.6}),
+            ],
+            capital_weight=1.0,
+            adaptive_combiner_config=ac,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+    ]
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+class TestAdaptiveCombinerIntegration:
+    def test_adaptive_combiner_runs(self):
+        orch = _make_adaptive_orchestrator()
+        result = orch.run_once()
+        assert result.error == ""
+        assert len(result.combined_weights) > 0
+
+    def test_adaptive_combiner_multiple_cycles(self):
+        """IC history should accumulate across multiple run_once calls."""
+        orch = _make_adaptive_orchestrator()
+        r1 = orch.run_once()
+        r2 = orch.run_once()
+        assert r1.error == ""
+        assert r2.error == ""
+
+    def test_no_adaptive_config_uses_static(self):
+        orch = _make_orchestrator(n_sleeves=1, capital_weights=[1.0])
+        result = orch.run_once()
+        assert result.error == ""
+
+    def test_adaptive_config_default_none(self):
+        sleeve = StrategySleeve(name="test")
+        assert sleeve.adaptive_combiner_config is None
+
+    def test_adaptive_with_scaling(self):
+        """Adaptive combiner + position scaler should work together."""
+        symbols = SYMBOLS
+        returns = _make_returns(symbols)
+        oms = _make_oms()
+
+        sleeves = [
+            StrategySleeve(
+                name="adaptive_scaled",
+                signals=[
+                    StubSignal("sig_a", {"AAPL": 0.7, "GOOG": 0.5, "MSFT": 0.3}),
+                ],
+                capital_weight=1.0,
+                adaptive_combiner_config=AdaptiveCombinerConfig(
+                    min_ic_periods=3, shrinkage=0.5
+                ),
+                scaling_config=ScalingConfig(method=ScalingMethod.CONVICTION),
+                portfolio_config=PortfolioConfig(
+                    optimization_method=OptimizationMethod.RISK_PARITY,
+                    constraints=PortfolioConstraints(
+                        long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                    ),
+                ),
+            ),
+        ]
+
+        config = OrchestratorConfig(
+            universe=symbols,
+            risk_config=RiskConfig(
+                limits=ExposureLimits(
+                    max_position_fraction=0.50,
+                    max_order_fraction=0.50,
+                    max_gross_exposure=1.50,
+                ),
+            ),
+            min_order_value=10.0,
+        )
+
+        orch = StrategyOrchestrator(
+            config=config,
+            sleeves=sleeves,
+            oms=oms,
+            returns_provider=lambda syms, lookback: returns,
+        )
+        result = orch.run_once()
+        assert result.error == ""
