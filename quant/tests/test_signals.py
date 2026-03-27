@@ -227,11 +227,12 @@ class TestMeanReversionSignal:
         out = MeanReversionSignal().compute("TEST", features, _NOW)
         assert out.score == 0.0
 
-    def test_metadata_contains_z_score(self):
+    def test_metadata_contains_band_info(self):
         features = _make_features(_flat(60))
         out = MeanReversionSignal().compute("TEST", features, _NOW)
         if out.confidence > 0:
-            assert "z_score" in out.metadata
+            assert "mid" in out.metadata
+            assert "band_width" in out.metadata
 
 
 # ---------------------------------------------------------------------------
@@ -275,11 +276,13 @@ class TestTrendFollowingSignal:
         with pytest.raises(ValueError):
             TrendFollowingSignal(fast_ma=50, slow_ma=20)
 
-    def test_metadata_contains_alignment(self):
+    def test_metadata_contains_trend_info(self):
         features = _make_features(_trending_up(80))
         out = TrendFollowingSignal().compute("TEST", features, _NOW)
         if out.confidence > 0:
-            assert "sma_aligned" in out.metadata
+            assert "macd_hist" in out.metadata
+            assert "sma_fast" in out.metadata
+            assert "sma_slow" in out.metadata
 
 
 # ---------------------------------------------------------------------------
