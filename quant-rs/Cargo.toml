@@ -5,6 +5,8 @@ members = [
     "quant-risk",
     "quant-signals",
     "quant-backtest",
+    "quant-oms",
+    "quant-portfolio",
 ]
 
 [package]
@@ -23,6 +25,9 @@ quant-features = { path = "quant-features" }
 quant-risk = { path = "quant-risk" }
 quant-signals = { path = "quant-signals" }
 quant-backtest = { path = "quant-backtest" }
+quant-oms = { path = "quant-oms" }
+quant-portfolio = { path = "quant-portfolio" }
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 pyo3 = { version = "0.21", features = ["extension-module", "auto-initialize"] }

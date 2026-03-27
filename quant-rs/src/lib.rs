@@ -13,6 +13,8 @@ use pyo3::prelude::*;
 
 mod backtest;
 mod features;
+mod oms;
+mod portfolio;
 mod risk;
 mod signals;
 
@@ -37,6 +39,16 @@ fn quant_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let backtest_mod = PyModule::new_bound(m.py(), "backtest")?;
     backtest::register(&backtest_mod)?;
     m.add_submodule(&backtest_mod)?;
+
+    // oms submodule
+    let oms_mod = PyModule::new_bound(m.py(), "oms")?;
+    oms::register(&oms_mod)?;
+    m.add_submodule(&oms_mod)?;
+
+    // portfolio submodule
+    let portfolio_mod = PyModule::new_bound(m.py(), "portfolio")?;
+    portfolio::register(&portfolio_mod)?;
+    m.add_submodule(&portfolio_mod)?;
 
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

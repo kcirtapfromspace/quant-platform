@@ -1,0 +1,15 @@
+[package]
+name = "quant-portfolio"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust portfolio construction: alpha combination, covariance estimation, optimization, rebalancing"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+approx = "0.5"
