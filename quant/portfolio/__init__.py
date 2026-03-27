@@ -13,6 +13,12 @@ from quant.portfolio.attribution import (
 )
 from quant.portfolio.constraints import PortfolioConstraints
 from quant.portfolio.engine import ConstructionResult, PortfolioConfig, PortfolioEngine
+from quant.portfolio.factor_attribution import (
+    FactorAttributionReport,
+    FactorAttributor,
+    FactorContribution,
+    construct_factors,
+)
 from quant.portfolio.optimizers import (
     BaseOptimizer,
     MaxDiversificationOptimizer,
@@ -35,6 +41,11 @@ __all__ = [
     "PerformanceAttributor",
     "SectorAttribution",
     "SignalAttribution",
+    # Factor attribution
+    "FactorAttributionReport",
+    "FactorAttributor",
+    "FactorContribution",
+    "construct_factors",
     # Constraints
     "PortfolioConstraints",
     # Engine

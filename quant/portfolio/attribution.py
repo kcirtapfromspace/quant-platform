@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from quant.portfolio.factor_attribution import FactorAttributor
+
 TRADING_DAYS_PER_YEAR = 252
 
 
@@ -156,12 +158,26 @@ class PerformanceAttributor:
                 benchmark_weights, bench_ret,
             )
 
+        # Factor attribution (populates factor_exposures)
+        factor_exposures: dict[str, float] = {}
+        if asset_returns is not None:
+            try:
+                fa = FactorAttributor(min_observations=20)
+                fa_report = fa.attribute(
+                    portfolio_returns=port_ret,
+                    asset_returns=asset_returns,
+                )
+                factor_exposures = fa_report.factor_exposures
+            except Exception:
+                pass
+
         return AttributionReport(
             total_return=total_ret,
             benchmark_return=bench_total,
             active_return=active_ret,
             signal_attributions=signal_attrs,
             sector_attributions=sector_attrs,
+            factor_exposures=factor_exposures,
             tracking_error=te,
             information_ratio=ir,
         )
