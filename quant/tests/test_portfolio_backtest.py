@@ -747,3 +747,96 @@ class TestFactorSignalIntegration:
         assert report.n_rebalances > 0
         assert np.isfinite(report.sharpe_ratio)
         assert np.isfinite(report.max_drawdown)
+
+
+# ---------------------------------------------------------------------------
+# Backtest attribution integration tests (QUA-41)
+# ---------------------------------------------------------------------------
+
+
+class TestBacktestAttribution:
+    """Test that backtests automatically produce attribution reports."""
+
+    def _run_basic_backtest(self) -> PortfolioBacktestReport:
+        returns = _make_returns(n=300, n_assets=5)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        return engine.run(returns, [_FixedSignal()], config)
+
+    def test_attribution_populated(self):
+        report = self._run_basic_backtest()
+        assert report.attribution is not None
+
+    def test_factor_attribution_populated(self):
+        report = self._run_basic_backtest()
+        assert report.factor_attribution is not None
+
+    def test_attribution_has_total_return(self):
+        report = self._run_basic_backtest()
+        assert report.attribution is not None
+        # Attribution total return should be close to report total return
+        # (small differences from eval window alignment)
+        assert np.isfinite(report.attribution.total_return)
+
+    def test_factor_attribution_has_exposures(self):
+        report = self._run_basic_backtest()
+        fa = report.factor_attribution
+        assert fa is not None
+        assert len(fa.factor_exposures) > 0
+        assert "market" in fa.factor_exposures
+
+    def test_factor_attribution_r_squared(self):
+        report = self._run_basic_backtest()
+        fa = report.factor_attribution
+        assert fa is not None
+        assert 0.0 <= fa.r_squared <= 1.0
+
+    def test_factor_attribution_alpha(self):
+        report = self._run_basic_backtest()
+        fa = report.factor_attribution
+        assert fa is not None
+        assert np.isfinite(fa.alpha)
+
+    def test_factor_contributions_present(self):
+        report = self._run_basic_backtest()
+        fa = report.factor_attribution
+        assert fa is not None
+        assert len(fa.factor_contributions) > 0
+        for fc in fa.factor_contributions:
+            assert np.isfinite(fc.beta)
+            assert np.isfinite(fc.contribution)
+
+    def test_attribution_factor_exposures_populated(self):
+        """PerformanceAttributor.factor_exposures should now be populated
+        (was always empty before QUA-40/41 integration)."""
+        report = self._run_basic_backtest()
+        attr = report.attribution
+        assert attr is not None
+        assert len(attr.factor_exposures) > 0
+
+    def test_summary_includes_factor_section(self):
+        report = self._run_basic_backtest()
+        summary = report.summary()
+        assert "Factor R²" in summary
+        assert "Alpha (ann.)" in summary
+
+    def test_attribution_with_benchmark(self):
+        returns = _make_returns(n=300, n_assets=5)
+        # Add a benchmark column
+        rng = np.random.default_rng(99)
+        returns["BENCH"] = rng.normal(0.0003, 0.01, 300)
+        config = PortfolioBacktestConfig(
+            min_history=60,
+            benchmark="BENCH",
+            portfolio_config=PortfolioConfig(rebalance_threshold=0.0),
+        )
+        engine = PortfolioBacktestEngine()
+        report = engine.run(returns, [_FixedSignal()], config)
+
+        assert report.attribution is not None
+        assert report.factor_attribution is not None
+        # Should have benchmark comparison too
+        assert np.isfinite(report.tracking_error)

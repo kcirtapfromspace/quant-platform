@@ -50,7 +50,9 @@ from loguru import logger
 
 from quant.backtest import metrics as m
 from quant.portfolio.alpha import AlphaCombiner, CombinationMethod
+from quant.portfolio.attribution import AttributionReport, PerformanceAttributor
 from quant.portfolio.engine import PortfolioConfig, PortfolioEngine
+from quant.portfolio.factor_attribution import FactorAttributionReport, FactorAttributor
 from quant.signals.base import BaseSignal, SignalOutput
 
 # ---------------------------------------------------------------------------
@@ -156,6 +158,10 @@ class PortfolioBacktestReport:
     weights_history: pd.DataFrame = field(repr=False)
     rebalances: list[RebalanceSnapshot] = field(repr=False)
 
+    # Attribution (populated when asset returns are available)
+    attribution: AttributionReport | None = field(default=None, repr=False)
+    factor_attribution: FactorAttributionReport | None = field(default=None, repr=False)
+
     def summary(self) -> str:
         """Return a human-readable multi-line summary."""
         lines = [
@@ -183,6 +189,20 @@ class PortfolioBacktestReport:
                 f"Tracking error     : {self.tracking_error:.2%}",
                 f"Information ratio  : {self.information_ratio:.2f}",
             ]
+        if self.factor_attribution is not None:
+            fa = self.factor_attribution
+            lines += [
+                "-" * 45,
+                f"Factor R²          : {fa.r_squared:.2%}",
+                f"Alpha (ann.)       : {fa.alpha:+.2%}",
+                f"Residual vol       : {fa.residual_vol:.2%}",
+            ]
+            for fc in fa.factor_contributions:
+                lines.append(
+                    f"  {fc.factor_name:18s}: β={fc.beta:+.3f}  "
+                    f"contrib={fc.contribution:+.4f}  "
+                    f"risk={fc.risk_contribution:.1%}"
+                )
         return "\n".join(lines)
 
 
@@ -436,6 +456,34 @@ class PortfolioBacktestEngine:
             else dates[-1]
         )
 
+        # ── Attribution ────────────────────────────────────────────────
+        attribution_report = None
+        factor_attr_report = None
+        try:
+            perf_attr = PerformanceAttributor()
+            attribution_report = perf_attr.attribute(
+                portfolio_returns=eval_returns,
+                benchmark_returns=(
+                    benchmark_returns.iloc[eval_start:]
+                    if benchmark_returns is not None
+                    else None
+                ),
+                weights_history=weights_history.iloc[eval_start:],
+                sector_map=config.sector_map or None,
+                asset_returns=asset_returns.iloc[eval_start:],
+            )
+        except Exception:
+            logger.debug("Attribution computation failed — skipping")
+
+        try:
+            fa = FactorAttributor(min_observations=20)
+            factor_attr_report = fa.attribute(
+                portfolio_returns=eval_returns,
+                asset_returns=asset_returns.iloc[eval_start:],
+            )
+        except Exception:
+            logger.debug("Factor attribution failed — skipping")
+
         report = PortfolioBacktestReport(
             name=config.name,
             start_date=start_date,
@@ -460,6 +508,8 @@ class PortfolioBacktestEngine:
             returns_series=returns_series,
             weights_history=weights_history,
             rebalances=rebalances,
+            attribution=attribution_report,
+            factor_attribution=factor_attr_report,
         )
 
         logger.info(
