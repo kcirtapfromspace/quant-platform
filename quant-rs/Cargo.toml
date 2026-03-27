@@ -11,29 +11,6 @@ members = [
     "quant-cli",
 ]
 
-[package]
-name = "quant-rs"
-version = "0.1.0"
-edition = "2021"
-description = "PyO3 extension module exposing Rust kernels to Python"
-
-[lib]
-name = "quant_rs"
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-pyo3 = { version = "0.21", features = ["extension-module"] }
-quant-features = { path = "quant-features" }
-quant-risk = { path = "quant-risk" }
-quant-signals = { path = "quant-signals" }
-quant-backtest = { path = "quant-backtest" }
-quant-oms = { path = "quant-oms" }
-quant-portfolio = { path = "quant-portfolio" }
-chrono = { version = "0.4", features = ["serde"] }
-
-[dev-dependencies]
-pyo3 = { version = "0.21", features = ["extension-module", "auto-initialize"] }
-
 [profile.release]
 opt-level = 3
 lto = "thin"

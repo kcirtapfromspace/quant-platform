@@ -1,31 +1,20 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-dist/
-build/
-.venv/
-*.egg
-*.whl
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-coverage.xml
-.coverage
-
 # Rust / Cargo
 quant-rs/target/
 *.pdb
 
-# maturin build output (*.so / *.pyd installed into Python env — not committed)
-quant_rs*.so
-quant_rs*.pyd
+# Python remnants (venv, caches — not tracked)
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+uv.lock
 
 # Environment / secrets
 .env
 .env.*
-!.env.example
 
 # IDE
 .vscode/

@@ -10,13 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  PYTHON_VERSION: "3.12"
-  UV_SYSTEM_PYTHON: "1"
-
 jobs:
   # ---------------------------------------------------------------------------
-  # Rust — cargo test + clippy + fmt for pure-Rust library crates
+  # Rust — fmt, clippy, and tests for all workspace crates
   # ---------------------------------------------------------------------------
   rust:
     name: Rust
@@ -24,13 +20,14 @@ jobs:
     defaults:
       run:
         working-directory: quant-rs
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.78"
+          toolchain: "1.93.1"
           components: rustfmt, clippy
 
       - name: Cache cargo registry
@@ -47,160 +44,25 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy -p quant-features -p quant-risk -p quant-signals -p quant-backtest -- -D warnings
+        run: >
+          cargo clippy
+          -p quant-features
+          -p quant-risk
+          -p quant-signals
+          -p quant-backtest
+          -p quant-oms
+          -p quant-portfolio
+          -p quant-data
+          -p quant-cli
+          -- -D warnings
 
       - name: cargo test
-        run: cargo test -p quant-features -p quant-risk -p quant-signals -p quant-backtest
-
-  # ---------------------------------------------------------------------------
-  # Lint — ruff check + format
-  # ---------------------------------------------------------------------------
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dev dependencies
-        run: uv pip install -e ".[dev]"
-
-      - name: ruff lint
-        run: uv run ruff check quant/
-
-      - name: ruff format check
-        run: uv run ruff format --check quant/
-
-  # ---------------------------------------------------------------------------
-  # Type check — mypy
-  # ---------------------------------------------------------------------------
-  type-check:
-    name: Type Check
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dev dependencies
-        run: uv pip install -e ".[dev]"
-
-      - name: mypy
-        run: uv run mypy quant/ --config-file=pyproject.toml
-
-  # ---------------------------------------------------------------------------
-  # Tests — pytest with coverage
-  # ---------------------------------------------------------------------------
-  tests:
-    name: Tests
-    runs-on: ubuntu-latest
-    needs: lint
-
-    services:
-      timescaledb:
-        image: timescale/timescaledb:latest-pg16
-        env:
-          POSTGRES_USER: quant
-          POSTGRES_PASSWORD: quantpass
-          POSTGRES_DB: quant_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U quant -d quant_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      redis:
-        image: redis:7.2-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      DATABASE_URL: postgresql://quant:quantpass@localhost:5432/quant_test
-      REDIS_URL: redis://localhost:6379/0
-      QUANT_ENV: test
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: uv pip install -e ".[dev,monitoring]"
-
-      - name: Install Rust (for maturin)
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.78"
-
-      - name: Build and install quant-rs (PyO3 extension)
-        run: |
-          uv pip install maturin
-          cd quant-rs && uv run maturin develop --release
-
-      - name: Run Alembic migrations
-        run: uv run alembic upgrade head
-
-      - name: Run tests
-        run: uv run pytest quant/tests/ --cov=quant --cov-report=xml --cov-report=term-missing -q
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        if: always()
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
-
-  # ---------------------------------------------------------------------------
-  # Docker build — validate image builds cleanly
-  # ---------------------------------------------------------------------------
-  docker-build:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    needs: [lint, type-check, tests, rust]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: quant-data:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: >
+          cargo test
+          -p quant-features
+          -p quant-risk
+          -p quant-signals
+          -p quant-backtest
+          -p quant-oms
+          -p quant-portfolio
+          -p quant-data
