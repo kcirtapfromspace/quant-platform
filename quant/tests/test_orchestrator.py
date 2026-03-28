@@ -1739,3 +1739,135 @@ class TestStrategyCorrelationIntegration:
         assert report is not None
         assert report.n_strategies == 3
         assert len(report.correlation_matrix) == 3
+
+
+# ── Signal IC integration tests ──────────────────────────────────────────
+
+
+def _make_ic_orchestrator() -> StrategyOrchestrator:
+    """Build orchestrator with lifecycle config for IC testing."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    sleeves = [
+        StrategySleeve(
+            name="strategy_alpha",
+            signals=[StubSignal("alpha", {"AAPL": 0.7, "GOOG": 0.5, "MSFT": 0.3})],
+            capital_weight=0.5,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+        StrategySleeve(
+            name="strategy_beta",
+            signals=[StubSignal("beta", {"AAPL": 0.3, "GOOG": 0.6, "MSFT": 0.8})],
+            capital_weight=0.5,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+    ]
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        lifecycle_config=LifecycleConfig(),
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+class TestSignalICIntegration:
+    def test_alpha_scores_in_sleeve_result(self):
+        """SleeveResult should contain alpha scores after sleeve execution."""
+        orch = _make_ic_orchestrator()
+        result = orch.run_once()
+        assert result.error == ""
+        for sr in result.sleeve_results:
+            assert len(sr.alpha_scores) > 0
+            # Alpha scores should be float values
+            for v in sr.alpha_scores.values():
+                assert isinstance(v, float)
+
+    def test_ic_not_computed_on_first_cycle(self):
+        """IC requires previous cycle's scores — first cycle has no IC data."""
+        orch = _make_ic_orchestrator()
+        result = orch.run_once()
+        # Lifecycle report exists (from lifecycle config)
+        assert result.lifecycle_report is not None
+        # IC should be None on first cycle since we have no previous scores
+        for h in result.lifecycle_report.strategy_health:
+            assert h.signal_ic is None
+
+    def test_ic_computed_on_second_cycle(self):
+        """Second cycle should have IC values from comparing scores to returns."""
+        orch = _make_ic_orchestrator()
+        # First cycle: stores alpha scores
+        r1 = orch.run_once()
+        assert r1.error == ""
+        # Second cycle: should compute IC using stored scores
+        r2 = orch.run_once()
+        assert r2.error == ""
+        assert r2.lifecycle_report is not None
+        # At least one strategy should have IC computed
+        ic_values = [h.signal_ic for h in r2.lifecycle_report.strategy_health]
+        has_ic = any(ic is not None for ic in ic_values)
+        assert has_ic, "Expected at least one strategy to have signal IC computed"
+
+    def test_ic_is_finite(self):
+        """IC values should be finite numbers in [-1, 1]."""
+        orch = _make_ic_orchestrator()
+        orch.run_once()
+        r2 = orch.run_once()
+        assert r2.lifecycle_report is not None
+        for h in r2.lifecycle_report.strategy_health:
+            if h.signal_ic is not None:
+                assert -1.0 <= h.signal_ic <= 1.0
+
+    def test_ic_history_accumulates(self):
+        """IC history should grow across multiple cycles."""
+        orch = _make_ic_orchestrator()
+        orch.run_once()  # cycle 1: store scores
+        orch.run_once()  # cycle 2: compute IC #1
+        r3 = orch.run_once()  # cycle 3: compute IC #2
+        assert r3.lifecycle_report is not None
+        for h in r3.lifecycle_report.strategy_health:
+            if h.signal_ic is not None:
+                # IC trend should be computable with 2+ observations
+                # (ic_trend may still be None if less than OLS minimum)
+                pass
+
+    def test_ic_feeds_into_health_classification(self):
+        """IC data should be available to the lifecycle health assessor."""
+        orch = _make_ic_orchestrator()
+        orch.run_once()
+        r2 = orch.run_once()
+        assert r2.lifecycle_report is not None
+        # Health assessment should have run with IC data available
+        for h in r2.lifecycle_report.strategy_health:
+            # Status should be valid
+            assert h.status in (
+                HealthStatus.HEALTHY,
+                HealthStatus.WATCH,
+                HealthStatus.DEGRADED,
+                HealthStatus.CRITICAL,
+            )

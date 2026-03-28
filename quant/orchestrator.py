@@ -79,6 +79,22 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _rank(xs: list[float]) -> list[float]:
+    """Compute average ranks (1-based) for a list of values."""
+    indexed = sorted(enumerate(xs), key=lambda t: t[1])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(indexed):
+        j = i
+        while j < len(indexed) and indexed[j][1] == indexed[i][1]:
+            j += 1
+        avg_rank = (i + j + 1) / 2  # average of 1-based ranks i+1..j
+        for k in range(i, j):
+            ranks[indexed[k][0]] = avg_rank
+        i = j
+    return ranks
+
+
 # ── Type aliases ──────────────────────────────────────────────────────────────
 
 FeatureProvider = Callable[[str, BaseSignal], dict[str, pd.Series]]
@@ -135,6 +151,8 @@ class SleeveResult:
         name:               Sleeve name.
         capital_allocated:  Dollar capital allocated to this sleeve.
         target_weights:     Target portfolio weights for this sleeve's universe.
+        alpha_scores:       Combined alpha scores before portfolio construction.
+                            Used for signal IC computation across cycles.
         construction:       Portfolio construction output.
         n_trades:           Number of trades proposed.
         error:              Error message if the sleeve failed.
@@ -143,6 +161,7 @@ class SleeveResult:
     name: str
     capital_allocated: float = 0.0
     target_weights: dict[str, float] = field(default_factory=dict)
+    alpha_scores: dict[str, float] = field(default_factory=dict)
     construction: ConstructionResult | None = None
     n_trades: int = 0
     error: str = ""
@@ -261,6 +280,11 @@ class StrategyOrchestrator:
         if config.lifecycle_config is not None:
             self._lifecycle_mgr = LifecycleManager(config.lifecycle_config)
 
+        # Signal IC tracking: stores alpha scores from previous cycle
+        # and accumulates IC history for lifecycle health evaluation
+        self._last_alpha_scores: dict[str, dict[str, float]] = {}
+        self._sleeve_ic_history: dict[str, list[float]] = {}
+
         # Regime state
         self._last_regime: RegimeState | None = None
 
@@ -356,11 +380,32 @@ class StrategyOrchestrator:
                 sr = self._run_sleeve(sleeve, total_value, now, capital_weight_override=cap_w)
                 sleeve_results.append(sr)
 
-            # ── 2b. Update monitor with sleeve results ────────────────────
+            # ── 2b. Update monitor and compute signal IC ──────────────
             if monitor is not None:
                 for sr in sleeve_results:
                     if not sr.error:
                         monitor.update(sr.name, sr.capital_allocated)
+
+            # Compute signal IC: compare last cycle's alpha scores
+            # against the most recent day's realised returns.
+            recent_returns = self._get_returns_history(1)
+            if not recent_returns.empty:
+                last_day = recent_returns.iloc[-1]
+                for sr in sleeve_results:
+                    if sr.error:
+                        continue
+                    prev_scores = self._last_alpha_scores.get(sr.name)
+                    if prev_scores:
+                        ic = self._compute_signal_ic(prev_scores, last_day)
+                        if ic is not None:
+                            if sr.name not in self._sleeve_ic_history:
+                                self._sleeve_ic_history[sr.name] = []
+                            self._sleeve_ic_history[sr.name].append(ic)
+
+            # Store current alpha scores for next cycle's IC computation
+            for sr in sleeve_results:
+                if not sr.error and sr.alpha_scores:
+                    self._last_alpha_scores[sr.name] = dict(sr.alpha_scores)
 
             # ── 2c. Lifecycle evaluation ────────────────────────────────
             lifecycle_report: LifecycleReport | None = None
@@ -374,11 +419,19 @@ class StrategyOrchestrator:
                         sr, returns_df
                     )
                     cap_w = effective_weights.get(sr.name, 0.0)
+
+                    # Build IC data for lifecycle snapshot
+                    ic_hist = self._sleeve_ic_history.get(sr.name, [])
+                    signal_ic = ic_hist[-1] if ic_hist else None
+                    ic_history = pd.Series(ic_hist) if ic_hist else None
+
                     self._lifecycle_mgr.update(
                         StrategySnapshot(
                             name=sr.name,
                             returns_series=strategy_returns,
                             current_weight=cap_w,
+                            signal_ic=signal_ic,
+                            ic_history=ic_history,
                         )
                     )
                 lifecycle_report = self._lifecycle_mgr.evaluate()
@@ -660,10 +713,17 @@ class StrategyOrchestrator:
                 for sym, w in construction.optimization.weights.items():
                     target_weights[sym] = w * cap_w
 
+            # Extract float scores from AlphaScore objects for IC tracking
+            float_scores = {
+                sym: (a.score if hasattr(a, "score") else float(a))
+                for sym, a in alpha_scores.items()
+            }
+
             return SleeveResult(
                 name=sleeve.name,
                 capital_allocated=sleeve_capital,
                 target_weights=target_weights,
+                alpha_scores=float_scores,
                 construction=construction,
                 n_trades=len(construction.rebalance.trades) if construction.rebalance_triggered else 0,
             )
@@ -888,6 +948,43 @@ class StrategyOrchestrator:
         if self._feature_provider is not None:
             return self._feature_provider(symbol, signal)
         return {}
+
+    @staticmethod
+    def _compute_signal_ic(
+        alpha_scores: dict[str, float],
+        returns: pd.Series,
+    ) -> float | None:
+        """Compute Spearman rank IC between signal scores and realised returns.
+
+        Args:
+            alpha_scores: ``{symbol: alpha_score}`` from the previous cycle.
+            returns: Most recent day's returns, indexed by symbol.
+
+        Returns:
+            Rank IC (Spearman correlation) or None if insufficient overlap.
+        """
+        common = [s for s in alpha_scores if s in returns.index]
+        if len(common) < 3:
+            return None
+
+        scores = [alpha_scores[s] for s in common]
+        rets = [float(returns[s]) for s in common]
+
+        # Spearman rank correlation (pure Python — avoid scipy dependency)
+        n = len(common)
+        score_ranks = _rank(scores)
+        ret_ranks = _rank(rets)
+
+        # Pearson correlation of ranks
+        mean_sr = sum(score_ranks) / n
+        mean_rr = sum(ret_ranks) / n
+        num = sum((score_ranks[i] - mean_sr) * (ret_ranks[i] - mean_rr) for i in range(n))
+        denom_s = sum((score_ranks[i] - mean_sr) ** 2 for i in range(n))
+        denom_r = sum((ret_ranks[i] - mean_rr) ** 2 for i in range(n))
+        denom = (denom_s * denom_r) ** 0.5
+        if denom < 1e-12:
+            return 0.0
+        return num / denom
 
     @staticmethod
     def _compute_sleeve_returns(
