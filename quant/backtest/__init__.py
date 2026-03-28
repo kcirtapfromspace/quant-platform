@@ -43,6 +43,12 @@ from quant.backtest.multi_strategy import (
     SleeveConfig,
     SleeveSnapshot,
 )
+from quant.backtest.multi_strategy_walk_forward import (
+    MultiStrategyFoldResult,
+    MultiStrategyWalkForwardAnalyzer,
+    MultiStrategyWalkForwardConfig,
+    MultiStrategyWalkForwardResult,
+)
 from quant.backtest.portfolio_backtest import (
     PortfolioBacktestConfig,
     PortfolioBacktestEngine,
@@ -74,6 +80,11 @@ __all__ = [
     "MultiStrategyConfig",
     "SleeveConfig",
     "SleeveSnapshot",
+    # Multi-strategy walk-forward
+    "MultiStrategyFoldResult",
+    "MultiStrategyWalkForwardAnalyzer",
+    "MultiStrategyWalkForwardConfig",
+    "MultiStrategyWalkForwardResult",
     # Portfolio backtest
     "PortfolioBacktestConfig",
     "PortfolioBacktestEngine",
