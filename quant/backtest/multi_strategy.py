@@ -52,6 +52,7 @@ from loguru import logger
 from quant.backtest import metrics as m
 from quant.execution.cost_model import TransactionCostModel
 from quant.portfolio.alpha import AlphaCombiner, CombinationMethod
+from quant.portfolio.capital_allocator import AllocationConfig, AllocationResult, CapitalAllocator
 from quant.portfolio.engine import PortfolioConfig, PortfolioEngine
 from quant.portfolio.lifecycle import (
     LifecycleConfig,
@@ -128,6 +129,10 @@ class MultiStrategyConfig:
                                 backtester halts trading (goes flat) when the
                                 portfolio drawdown exceeds the threshold, resuming
                                 only when the breaker resets.
+        allocation_config:      Dynamic capital allocation config.  When set,
+                                sleeve capital weights are recomputed at each
+                                rebalance using the specified method (inverse-vol,
+                                risk parity, etc.) based on recent sleeve returns.
         min_history:            Min trading days before first trade.
         name:                   Label for the backtest.
     """
@@ -146,6 +151,7 @@ class MultiStrategyConfig:
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
     circuit_breaker: DrawdownCircuitBreaker | None = None
+    allocation_config: AllocationConfig | None = None
     min_history: int = 60
     name: str = "multi_strategy_backtest"
 
@@ -183,6 +189,7 @@ class MultiRebalanceSnapshot:
     correlation_report: StrategyCorrelationReport | None = None
     regime_state: RegimeState | None = None
     circuit_breaker_active: bool = False
+    allocation_result: AllocationResult | None = None
 
 
 @dataclass
@@ -234,6 +241,9 @@ class MultiStrategyBacktestReport:
     sleeve_returns: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(), repr=False
     )
+
+    # Dynamic allocation stats
+    n_allocation_updates: int = 0
 
     # Cost decomposition (populated when cost_model is used)
     total_spread_costs: float = 0.0
@@ -347,6 +357,11 @@ class MultiStrategyBacktestEngine:
                 regime_adapter = RegimeWeightAdapter()
         strategy_types = {sc.name: sc.strategy_type for sc in config.sleeves}
 
+        # Dynamic capital allocator
+        capital_allocator: CapitalAllocator | None = None
+        if config.allocation_config is not None:
+            capital_allocator = CapitalAllocator(config.allocation_config)
+
         # State
         portfolio_value = config.initial_capital
         weights: dict[str, float] = {}
@@ -374,6 +389,7 @@ class MultiStrategyBacktestEngine:
         agg_spread = 0.0
         agg_impact = 0.0
         agg_commission = 0.0
+        n_alloc_updates = 0
         # Per-sleeve attribution tracking
         sleeve_names = [sc.name for sc in config.sleeves]
         sleeve_weights_state: dict[str, dict[str, float]] = {
@@ -477,6 +493,30 @@ class MultiStrategyBacktestEngine:
                         regime_records.append((dt, new_label))
                         if new_label != last_regime_label:
                             last_regime_label = new_label
+
+                # ── 2a-ii. Dynamic capital allocation ─────────────────
+                alloc_result: AllocationResult | None = None
+                if capital_allocator is not None and len(sleeve_daily_rets) > 0:
+                    # Collect per-sleeve return series from attribution history
+                    sleeve_rets_dict: dict[str, pd.Series] = {}
+                    lookback = capital_allocator.config.vol_lookback
+                    hist_len = len(sleeve_daily_rets)
+                    start_idx = max(0, hist_len - lookback)
+                    for sname in sleeve_names:
+                        vals = [
+                            sleeve_daily_rets[k].get(sname, 0.0)
+                            for k in range(start_idx, hist_len)
+                        ]
+                        if any(abs(v) > 1e-15 for v in vals):
+                            sleeve_rets_dict[sname] = pd.Series(
+                                vals,
+                                index=dates[start_idx:hist_len],
+                            )
+
+                    if len(sleeve_rets_dict) >= 2:
+                        alloc_result = capital_allocator.allocate(sleeve_rets_dict)
+                        capital_weights = dict(alloc_result.weights)
+                        n_alloc_updates += 1
 
                 # ── 2b. Run each sleeve ────────────────────────────────
                 sleeve_snapshots: list[SleeveSnapshot] = []
@@ -643,6 +683,7 @@ class MultiStrategyBacktestEngine:
                             lifecycle_report=lifecycle_report,
                             correlation_report=correlation_report,
                             regime_state=regime_state,
+                            allocation_result=alloc_result,
                         )
                     )
 
@@ -757,6 +798,7 @@ class MultiStrategyBacktestEngine:
             n_regime_changes=n_regime_changes,
             n_circuit_breaker_trips=cb_trip_count,
             circuit_breaker_days=cb_active_days,
+            n_allocation_updates=n_alloc_updates,
             total_spread_costs=agg_spread,
             total_impact_costs=agg_impact,
             total_commission_costs=agg_commission,

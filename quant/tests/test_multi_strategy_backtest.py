@@ -744,3 +744,216 @@ class TestSleeveAttribution:
             report.returns_series.iloc[start:].values,
             atol=1e-10,
         )
+
+
+# ---------------------------------------------------------------------------
+# Dynamic capital allocation integration (QUA-80)
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicCapitalAllocation:
+    """Tests for CapitalAllocator integration in the multi-strategy engine."""
+
+    def test_allocation_updates_tracked(self):
+        """Engine should report allocation updates when config is set."""
+        from quant.portfolio.capital_allocator import AllocationConfig, AllocationMethod
+
+        config = MultiStrategyConfig(
+            sleeves=_make_config(n_sleeves=2).sleeves,
+            rebalance_frequency=21,
+            min_history=60,
+            allocation_config=AllocationConfig(
+                method=AllocationMethod.INVERSE_VOL,
+            ),
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        # After first rebalance, allocator has no sleeve return history yet.
+        # But subsequent rebalances should produce updates.
+        assert report.n_allocation_updates >= 1
+
+    def test_no_allocation_without_config(self):
+        """Without allocation_config, n_allocation_updates should be 0."""
+        config = _make_config(n_sleeves=2)
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert report.n_allocation_updates == 0
+
+    def test_allocation_produces_valid_weights(self):
+        """Dynamic allocation should produce valid capital weights."""
+        from quant.portfolio.capital_allocator import AllocationConfig, AllocationMethod
+
+        config = MultiStrategyConfig(
+            sleeves=_make_config(n_sleeves=3).sleeves,
+            rebalance_frequency=21,
+            min_history=60,
+            allocation_config=AllocationConfig(
+                method=AllocationMethod.INVERSE_VOL,
+                min_weight=0.0,
+                max_weight=1.0,
+            ),
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert report.n_allocation_updates >= 1
+        alloc_snaps = [
+            r for r in report.rebalances if r.allocation_result is not None
+        ]
+        assert len(alloc_snaps) >= 1
+        for snap in alloc_snaps:
+            weights = snap.allocation_result.weights
+            assert abs(sum(weights.values()) - 1.0) < 1e-10
+            for w in weights.values():
+                assert 0.0 <= w <= 1.0
+            assert len(snap.allocation_result.sleeve_vols) == 3
+
+    def test_allocation_result_in_snapshots(self):
+        """Rebalance snapshots should carry AllocationResult when allocator runs."""
+        from quant.portfolio.capital_allocator import (
+            AllocationConfig,
+            AllocationMethod,
+            AllocationResult,
+        )
+
+        config = MultiStrategyConfig(
+            sleeves=_make_config(n_sleeves=2).sleeves,
+            rebalance_frequency=21,
+            min_history=60,
+            allocation_config=AllocationConfig(
+                method=AllocationMethod.INVERSE_VOL,
+            ),
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        # At least one rebalance should have an allocation result
+        has_alloc = [
+            r for r in report.rebalances if r.allocation_result is not None
+        ]
+        assert len(has_alloc) >= 1
+        for snap in has_alloc:
+            assert isinstance(snap.allocation_result, AllocationResult)
+            assert abs(sum(snap.allocation_result.weights.values()) - 1.0) < 1e-10
+
+    def test_risk_parity_allocation(self):
+        """Risk parity method should produce valid allocations."""
+        from quant.portfolio.capital_allocator import AllocationConfig, AllocationMethod
+
+        config = MultiStrategyConfig(
+            sleeves=_make_config(n_sleeves=3).sleeves,
+            rebalance_frequency=21,
+            min_history=60,
+            allocation_config=AllocationConfig(
+                method=AllocationMethod.RISK_PARITY,
+                min_weight=0.05,
+                max_weight=0.80,
+            ),
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert isinstance(report, MultiStrategyBacktestReport)
+        assert report.n_allocation_updates >= 1
+
+    def test_equal_weight_allocation(self):
+        """Equal weight allocation should keep weights balanced."""
+        from quant.portfolio.capital_allocator import AllocationConfig, AllocationMethod
+
+        config = MultiStrategyConfig(
+            sleeves=_make_config(n_sleeves=3).sleeves,
+            rebalance_frequency=21,
+            min_history=60,
+            allocation_config=AllocationConfig(
+                method=AllocationMethod.EQUAL_WEIGHT,
+            ),
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        # Check snapshots with allocation: weights should be ~equal
+        alloc_snaps = [
+            r for r in report.rebalances if r.allocation_result is not None
+        ]
+        for snap in alloc_snaps:
+            for w in snap.allocation_result.weights.values():
+                assert abs(w - 1.0 / 3) < 0.05
+
+    def test_sleeve_returns_still_sum_with_allocation(self):
+        """Per-sleeve returns should still sum to portfolio return."""
+        from quant.portfolio.capital_allocator import AllocationConfig, AllocationMethod
+
+        config = MultiStrategyConfig(
+            sleeves=_make_config(n_sleeves=2).sleeves,
+            rebalance_frequency=21,
+            min_history=60,
+            allocation_config=AllocationConfig(
+                method=AllocationMethod.INVERSE_VOL,
+            ),
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        sleeve_sum = report.sleeve_returns.sum(axis=1)
+        start = 61
+        np.testing.assert_allclose(
+            sleeve_sum.iloc[start:].values,
+            report.returns_series.iloc[start:].values,
+            atol=1e-10,
+        )
+
+    def test_allocation_with_regime(self):
+        """Allocation and regime detection should coexist."""
+        from quant.portfolio.capital_allocator import AllocationConfig, AllocationMethod
+
+        config = MultiStrategyConfig(
+            sleeves=[
+                SleeveConfig(
+                    name="momentum",
+                    signals=[StubSignal("mom")],
+                    capital_weight=0.6,
+                    strategy_type="momentum",
+                    portfolio_config=PortfolioConfig(
+                        optimization_method=OptimizationMethod.RISK_PARITY,
+                        constraints=PortfolioConstraints(
+                            long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                        ),
+                    ),
+                ),
+                SleeveConfig(
+                    name="mean_rev",
+                    signals=[StubSignal("mr")],
+                    capital_weight=0.4,
+                    strategy_type="mean_reversion",
+                    portfolio_config=PortfolioConfig(
+                        optimization_method=OptimizationMethod.RISK_PARITY,
+                        constraints=PortfolioConstraints(
+                            long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                        ),
+                    ),
+                ),
+            ],
+            rebalance_frequency=21,
+            min_history=60,
+            regime_config=RegimeConfig(),
+            allocation_config=AllocationConfig(
+                method=AllocationMethod.INVERSE_VOL,
+            ),
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        # Both should work together
+        assert report.n_allocation_updates >= 1
+        assert not report.regime_history.empty
+
+    def test_single_sleeve_allocation_skipped(self):
+        """Allocator requires >=2 sleeves; single sleeve should skip."""
+        from quant.portfolio.capital_allocator import AllocationConfig, AllocationMethod
+
+        config = MultiStrategyConfig(
+            sleeves=_make_config(n_sleeves=1, capital_weights=[1.0]).sleeves,
+            rebalance_frequency=21,
+            min_history=60,
+            allocation_config=AllocationConfig(
+                method=AllocationMethod.INVERSE_VOL,
+            ),
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        # Only 1 sleeve → allocator never called (needs >=2 with returns)
+        assert report.n_allocation_updates == 0
