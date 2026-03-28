@@ -9,6 +9,7 @@ import { Positions } from './components/Positions';
 import { OrderHistory } from './components/OrderHistory';
 import { BacktestPage } from './pages/BacktestPage';
 import { PortfolioDashboard } from './pages/PortfolioDashboard';
+import { MarketDataPage } from './pages/MarketDataPage';
 
 function PlaceholderPage({ title }: { title: string }) {
   return (
@@ -23,7 +24,7 @@ function PlaceholderPage({ title }: { title: string }) {
 }
 
 export default function App() {
-  const { quotes, portfolio, connected } = useWebSocket();
+  const { quotes, portfolio, lastOhlcv, orderBooks, connected } = useWebSocket();
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL');
   const [orderRefresh, setOrderRefresh] = useState(0);
   const [view, setView] = useState<View>('trading');
@@ -80,7 +81,7 @@ export default function App() {
         )}
 
         {view === 'market-data' && (
-          <PlaceholderPage title="Market Data" />
+          <MarketDataPage quotes={quotes} orderBooks={orderBooks} lastOhlcv={lastOhlcv} />
         )}
 
         {view === 'trade-blotter' && (

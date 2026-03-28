@@ -37,3 +37,9 @@ export async function fetchWatchlist(): Promise<string[]> {
   const res = await fetch(`${BASE}/watchlist`);
   return res.json();
 }
+
+export async function fetchOhlcv(symbol: string, interval = '5m'): Promise<OhlcvBar[]> {
+  const res = await fetch(`${BASE}/market/ohlcv?symbol=${encodeURIComponent(symbol)}&interval=${interval}`);
+  if (!res.ok) return [];
+  return res.json();
+}

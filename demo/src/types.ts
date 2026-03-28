@@ -56,7 +56,18 @@ export interface Portfolio {
   positions: Position[];
 }
 
+export interface OrderBookEntry {
+  price: number;
+  size: number;
+}
+
+export interface OrderBook {
+  symbol: string;
+  bids: OrderBookEntry[];
+  asks: OrderBookEntry[];
+}
+
 export interface WsMessage {
-  type: 'quote' | 'fill' | 'portfolio';
-  data: Quote | Order | Portfolio;
+  type: 'quote' | 'fill' | 'portfolio' | 'ohlcv' | 'orderbook';
+  data: Quote | Order | Portfolio | OhlcvBar | OrderBook;
 }

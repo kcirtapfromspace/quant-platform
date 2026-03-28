@@ -1,10 +1,12 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { Quote, Order, Portfolio, WsMessage } from '../types';
+import type { Quote, Order, Portfolio, OhlcvBar, OrderBook, WsMessage } from '../types';
 
 interface UseWebSocketReturn {
   quotes: Map<string, Quote>;
   portfolio: Portfolio | null;
   lastFill: Order | null;
+  lastOhlcv: OhlcvBar | null;
+  orderBooks: Map<string, OrderBook>;
   connected: boolean;
 }
 
@@ -12,6 +14,8 @@ export function useWebSocket(): UseWebSocketReturn {
   const [quotes, setQuotes] = useState<Map<string, Quote>>(new Map());
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [lastFill, setLastFill] = useState<Order | null>(null);
+  const [lastOhlcv, setLastOhlcv] = useState<OhlcvBar | null>(null);
+  const [orderBooks, setOrderBooks] = useState<Map<string, OrderBook>>(new Map());
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -45,6 +49,18 @@ export function useWebSocket(): UseWebSocketReturn {
         case 'fill':
           setLastFill(msg.data as Order);
           break;
+        case 'ohlcv':
+          setLastOhlcv(msg.data as OhlcvBar);
+          break;
+        case 'orderbook': {
+          const book = msg.data as OrderBook;
+          setOrderBooks((prev) => {
+            const next = new Map(prev);
+            next.set(book.symbol, book);
+            return next;
+          });
+          break;
+        }
       }
     };
   }, []);
@@ -57,5 +73,5 @@ export function useWebSocket(): UseWebSocketReturn {
     };
   }, [connect]);
 
-  return { quotes, portfolio, lastFill, connected };
+  return { quotes, portfolio, lastFill, lastOhlcv, orderBooks, connected };
 }
