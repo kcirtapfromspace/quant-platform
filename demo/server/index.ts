@@ -333,16 +333,59 @@ app.get('/api/analytics/attribution', (_req, res) => {
   res.json(rows);
 });
 
-// ── Strategy Monitor stub endpoints ───────────────────────────────────────────
+// ── Strategy Monitor endpoints ─────────────────────────────────────────────────
+// Canonical strategy taxonomy from CPO/QUA-22.
+// Keys map to Rust signal classes; statuses mirror quant-oms values.
+
+type StrategyStatus = 'active' | 'paper' | 'halted' | 'backtesting';
+type Regime = 'bull' | 'bear' | 'sideways';
+type StrategyCategory = 'Time-series' | 'Factor' | 'Cross-sectional';
+
+interface StrategyState {
+  strategy_key: string;
+  name: string;
+  status: StrategyStatus;
+  regime: Regime;
+  signal_confidence: number; // 0.0–1.0
+  daily_pnl: number;
+  positions: number;
+  category: StrategyCategory;
+}
+
+const strategyStore: Map<string, StrategyState> = new Map([
+  ['momentum_ts', { strategy_key: 'momentum_ts', name: 'Momentum (TS)', status: 'active', regime: 'bull', signal_confidence: 0.82, daily_pnl: 4820, positions: 12, category: 'Time-series' }],
+  ['mean_reversion_ts', { strategy_key: 'mean_reversion_ts', name: 'Mean Reversion (TS)', status: 'active', regime: 'sideways', signal_confidence: 0.61, daily_pnl: -1230, positions: 8, category: 'Time-series' }],
+  ['trend_following', { strategy_key: 'trend_following', name: 'Trend Following', status: 'active', regime: 'bull', signal_confidence: 0.91, daily_pnl: 9340, positions: 15, category: 'Time-series' }],
+  ['volatility_factor', { strategy_key: 'volatility_factor', name: 'Volatility Factor', status: 'paper', regime: 'sideways', signal_confidence: 0.74, daily_pnl: 890, positions: 5, category: 'Factor' }],
+  ['return_quality', { strategy_key: 'return_quality', name: 'Return Quality', status: 'paper', regime: 'bull', signal_confidence: 0.68, daily_pnl: 1240, positions: 9, category: 'Factor' }],
+  ['breakout', { strategy_key: 'breakout', name: 'Breakout', status: 'halted', regime: 'bear', signal_confidence: 0.38, daily_pnl: -2450, positions: 0, category: 'Factor' }],
+  ['momentum_xs', { strategy_key: 'momentum_xs', name: 'Momentum (XS)', status: 'active', regime: 'bull', signal_confidence: 0.79, daily_pnl: 3760, positions: 20, category: 'Cross-sectional' }],
+  ['mean_reversion_xs', { strategy_key: 'mean_reversion_xs', name: 'Mean Reversion (XS)', status: 'backtesting', regime: 'sideways', signal_confidence: 0.55, daily_pnl: 0, positions: 0, category: 'Cross-sectional' }],
+  ['volatility_xs', { strategy_key: 'volatility_xs', name: 'Volatility (XS)', status: 'paper', regime: 'sideways', signal_confidence: 0.63, daily_pnl: 420, positions: 7, category: 'Cross-sectional' }],
+]);
+
+function broadcastStrategyState(state: StrategyState) {
+  broadcast({ type: 'strategy_state', data: state });
+}
+
+function simulateStrategyUpdates() {
+  const regimes: Regime[] = ['bull', 'bear', 'sideways'];
+  for (const state of strategyStore.values()) {
+    if (state.status === 'halted' || state.status === 'backtesting') continue;
+    const drift = state.status === 'active' ? (Math.random() - 0.45) * 600 : (Math.random() - 0.48) * 200;
+    const updated: StrategyState = {
+      ...state,
+      daily_pnl: Math.round(state.daily_pnl + drift),
+      signal_confidence: Math.min(1, Math.max(0, state.signal_confidence + (Math.random() - 0.5) * 0.05)),
+      regime: Math.random() < 0.05 ? regimes[Math.floor(Math.random() * regimes.length)] : state.regime,
+    };
+    strategyStore.set(state.strategy_key, updated);
+    broadcastStrategyState(updated);
+  }
+}
 
 app.get('/api/strategies', (_req, res) => {
-  res.json([
-    { id: 's1', name: 'Momentum — AAPL/NVDA', status: 'active', regime: 'bull', dailyPnl: 4820, signalConfidence: 82 },
-    { id: 's2', name: 'Mean Reversion — SPY', status: 'active', regime: 'sideways', dailyPnl: -1230, signalConfidence: 61 },
-    { id: 's3', name: 'Pairs — MSFT/GOOGL', status: 'paper', regime: 'sideways', dailyPnl: 890, signalConfidence: 74 },
-    { id: 's4', name: 'Trend Following — NVDA', status: 'active', regime: 'bull', dailyPnl: 9340, signalConfidence: 91 },
-    { id: 's5', name: 'Stat Arb — JPM/V', status: 'halted', regime: 'bear', dailyPnl: -2450, signalConfidence: 38 },
-  ]);
+  res.json(Array.from(strategyStore.values()));
 });
 
 // ── Risk Dashboard stub endpoint ───────────────────────────────────────────────
@@ -379,6 +422,9 @@ wss.on('connection', (ws) => {
     ws.send(JSON.stringify({ type: 'quote', data: q }));
   }
   ws.send(JSON.stringify({ type: 'portfolio', data: engine.getPortfolio(latestQuotes) }));
+  for (const state of strategyStore.values()) {
+    ws.send(JSON.stringify({ type: 'strategy_state', data: state }));
+  }
 
   ws.on('close', () => clients.delete(ws));
 });
@@ -391,4 +437,7 @@ server.listen(PORT, () => {
   // Initial fetch, then poll every 5 seconds
   pollQuotes();
   setInterval(pollQuotes, 5000);
+
+  // Strategy state simulation — broadcast updates every 3 seconds
+  setInterval(simulateStrategyUpdates, 3000);
 });

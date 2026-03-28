@@ -67,7 +67,22 @@ export interface OrderBook {
   asks: OrderBookEntry[];
 }
 
+export type StrategyStatus = 'active' | 'paper' | 'halted' | 'backtesting';
+export type Regime = 'bull' | 'bear' | 'sideways';
+export type StrategyCategory = 'Time-series' | 'Factor' | 'Cross-sectional';
+
+export interface StrategyState {
+  strategy_key: string;
+  name: string;
+  status: StrategyStatus;
+  regime: Regime;
+  signal_confidence: number; // 0.0–1.0
+  daily_pnl: number;
+  positions: number;
+  category: StrategyCategory;
+}
+
 export interface WsMessage {
-  type: 'quote' | 'fill' | 'portfolio' | 'ohlcv' | 'orderbook';
-  data: Quote | Order | Portfolio | OhlcvBar | OrderBook;
+  type: 'quote' | 'fill' | 'portfolio' | 'ohlcv' | 'orderbook' | 'strategy_state';
+  data: Quote | Order | Portfolio | OhlcvBar | OrderBook | StrategyState;
 }

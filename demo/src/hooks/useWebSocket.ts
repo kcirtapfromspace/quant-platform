@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { Quote, Order, Portfolio, OhlcvBar, OrderBook, WsMessage } from '../types';
+import type { Quote, Order, Portfolio, OhlcvBar, OrderBook, StrategyState, WsMessage } from '../types';
 
 interface UseWebSocketReturn {
   quotes: Map<string, Quote>;
@@ -7,6 +7,7 @@ interface UseWebSocketReturn {
   lastFill: Order | null;
   lastOhlcv: OhlcvBar | null;
   orderBooks: Map<string, OrderBook>;
+  strategyStates: Map<string, StrategyState>;
   connected: boolean;
 }
 
@@ -16,6 +17,7 @@ export function useWebSocket(): UseWebSocketReturn {
   const [lastFill, setLastFill] = useState<Order | null>(null);
   const [lastOhlcv, setLastOhlcv] = useState<OhlcvBar | null>(null);
   const [orderBooks, setOrderBooks] = useState<Map<string, OrderBook>>(new Map());
+  const [strategyStates, setStrategyStates] = useState<Map<string, StrategyState>>(new Map());
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -61,6 +63,15 @@ export function useWebSocket(): UseWebSocketReturn {
           });
           break;
         }
+        case 'strategy_state': {
+          const state = msg.data as StrategyState;
+          setStrategyStates((prev) => {
+            const next = new Map(prev);
+            next.set(state.strategy_key, state);
+            return next;
+          });
+          break;
+        }
       }
     };
   }, []);
@@ -73,5 +84,5 @@ export function useWebSocket(): UseWebSocketReturn {
     };
   }, [connect]);
 
-  return { quotes, portfolio, lastFill, lastOhlcv, orderBooks, connected };
+  return { quotes, portfolio, lastFill, lastOhlcv, orderBooks, strategyStates, connected };
 }

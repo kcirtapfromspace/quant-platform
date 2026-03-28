@@ -1,19 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createChart, IChartApi, ISeriesApi, Time } from 'lightweight-charts';
+import { useWebSocket } from '../hooks/useWebSocket';
+import type { StrategyState, StrategyStatus, Regime, StrategyCategory } from '../types';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-type StrategyStatus = 'active' | 'halted' | 'paper';
-type Regime = 'bull' | 'bear' | 'sideways';
-
-interface StrategyState {
-  id: string;
-  name: string;
-  status: StrategyStatus;
-  regime: Regime;
-  dailyPnl: number;
-  signalConfidence: number; // 0–100
-}
+// ── Regime timeline types ──────────────────────────────────────────────────────
 
 interface RegimePoint {
   time: number;
@@ -21,20 +11,9 @@ interface RegimePoint {
   equityValue: number;
 }
 
-// ── Mock data ─────────────────────────────────────────────────────────────────
-
-function buildMockStrategies(): StrategyState[] {
-  return [
-    { id: 's1', name: 'Momentum — AAPL/NVDA', status: 'active', regime: 'bull', dailyPnl: 4820, signalConfidence: 82 },
-    { id: 's2', name: 'Mean Reversion — SPY', status: 'active', regime: 'sideways', dailyPnl: -1230, signalConfidence: 61 },
-    { id: 's3', name: 'Pairs — MSFT/GOOGL', status: 'paper', regime: 'sideways', dailyPnl: 890, signalConfidence: 74 },
-    { id: 's4', name: 'Trend Following — NVDA', status: 'active', regime: 'bull', dailyPnl: 9340, signalConfidence: 91 },
-    { id: 's5', name: 'Stat Arb — JPM/V', status: 'halted', regime: 'bear', dailyPnl: -2450, signalConfidence: 38 },
-  ];
-}
+// ── Mock regime timeline (historical display; real data pending backend) ───────
 
 function buildMockRegimeTimeline(): RegimePoint[] {
-  // ~12 months of daily data
   const points: RegimePoint[] = [];
   const DAYS = 252;
   const now = Math.floor(Date.now() / 1000);
@@ -59,24 +38,21 @@ function buildMockRegimeTimeline(): RegimePoint[] {
     for (let d = 0; d < seg.len && dayIdx < DAYS; d++, dayIdx++) {
       const ret = drift + (Math.random() * 2 - 1) * vol;
       equity *= 1 + ret;
-      points.push({
-        time: startTime + dayIdx * DAY_S,
-        regime: seg.regime,
-        equityValue: equity,
-      });
+      points.push({ time: startTime + dayIdx * DAY_S, regime: seg.regime, equityValue: equity });
     }
   }
 
   return points;
 }
 
-// ── Status badge ──────────────────────────────────────────────────────────────
+// ── Badges ────────────────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: StrategyStatus }) {
   const cfg: Record<StrategyStatus, { label: string; className: string }> = {
-    active: { label: 'ACTIVE', className: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' },
-    halted: { label: 'HALTED', className: 'bg-red-500/20 text-red-400 border-red-500/40' },
-    paper: { label: 'PAPER', className: 'bg-amber-500/20 text-amber-400 border-amber-500/40' },
+    active:      { label: 'ACTIVE',      className: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' },
+    halted:      { label: 'HALTED',      className: 'bg-red-500/20 text-red-400 border-red-500/40' },
+    paper:       { label: 'PAPER',       className: 'bg-amber-500/20 text-amber-400 border-amber-500/40' },
+    backtesting: { label: 'BACKTEST',    className: 'bg-violet-500/20 text-violet-400 border-violet-500/40' },
   };
   const { label, className } = cfg[status];
   return (
@@ -86,12 +62,10 @@ function StatusBadge({ status }: { status: StrategyStatus }) {
   );
 }
 
-// ── Regime badge ──────────────────────────────────────────────────────────────
-
 function RegimeBadge({ regime }: { regime: Regime }) {
   const cfg: Record<Regime, { label: string; className: string }> = {
-    bull: { label: '↑ BULL', className: 'bg-sky-500/20 text-sky-300 border-sky-500/40' },
-    bear: { label: '↓ BEAR', className: 'bg-red-500/20 text-red-400 border-red-500/40' },
+    bull:     { label: '↑ BULL', className: 'bg-sky-500/20 text-sky-300 border-sky-500/40' },
+    bear:     { label: '↓ BEAR', className: 'bg-red-500/20 text-red-400 border-red-500/40' },
     sideways: { label: '→ SIDE', className: 'bg-slate-500/20 text-slate-400 border-slate-500/40' },
   };
   const { label, className } = cfg[regime];
@@ -102,16 +76,28 @@ function RegimeBadge({ regime }: { regime: Regime }) {
   );
 }
 
+function CategoryPill({ category }: { category: StrategyCategory }) {
+  const cfg: Record<StrategyCategory, string> = {
+    'Time-series':      'text-cyan-400/70',
+    'Factor':           'text-purple-400/70',
+    'Cross-sectional':  'text-orange-400/70',
+  };
+  return (
+    <span className={`text-xs font-mono ${cfg[category]}`}>{category}</span>
+  );
+}
+
 // ── Signal confidence bar ─────────────────────────────────────────────────────
 
 function ConfidenceBar({ value }: { value: number }) {
-  const color = value >= 75 ? 'bg-emerald-500' : value >= 50 ? 'bg-amber-500' : 'bg-red-500';
+  const pct = Math.round(value * 100);
+  const color = pct >= 75 ? 'bg-emerald-500' : pct >= 50 ? 'bg-amber-500' : 'bg-red-500';
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-1.5 bg-slate-700/70 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${value}%` }} />
+        <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs font-mono text-slate-400 w-8 text-right">{value}%</span>
+      <span className="text-xs font-mono text-slate-400 w-8 text-right">{pct}%</span>
     </div>
   );
 }
@@ -120,52 +106,64 @@ function ConfidenceBar({ value }: { value: number }) {
 
 interface StrategyCardProps {
   strategy: StrategyState;
-  onToggle: (id: string) => void;
+  onToggle: (key: string) => void;
 }
 
 function StrategyCard({ strategy, onToggle }: StrategyCardProps) {
-  const pnlPos = strategy.dailyPnl >= 0;
+  const pnlPos = strategy.daily_pnl >= 0;
+  const canToggle = strategy.status === 'active' || strategy.status === 'paper';
   return (
     <div className="bg-slate-800/60 border border-slate-700/50 rounded-lg p-4 flex flex-col gap-3">
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="text-sm font-semibold text-slate-200 font-mono leading-tight">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <CategoryPill category={strategy.category} />
+          </div>
+          <div className="text-sm font-semibold text-slate-200 font-mono leading-tight truncate">
             {strategy.name}
           </div>
+          <div className="text-xs font-mono text-slate-600 mt-0.5">{strategy.strategy_key}</div>
           <div className="flex items-center gap-2 mt-1.5">
             <StatusBadge status={strategy.status} />
             <RegimeBadge regime={strategy.regime} />
           </div>
         </div>
-        <div className={`text-right font-mono ${pnlPos ? 'text-emerald-400' : 'text-red-400'}`}>
+        <div className={`text-right font-mono flex-shrink-0 ${pnlPos ? 'text-emerald-400' : 'text-red-400'}`}>
           <div className="text-xs text-slate-500 uppercase tracking-wide">Daily P&L</div>
           <div className="text-base font-semibold">
             {pnlPos ? '+' : ''}
-            {strategy.dailyPnl >= 0
-              ? `$${strategy.dailyPnl.toLocaleString()}`
-              : `-$${Math.abs(strategy.dailyPnl).toLocaleString()}`}
+            {strategy.daily_pnl >= 0
+              ? `$${strategy.daily_pnl.toLocaleString()}`
+              : `-$${Math.abs(strategy.daily_pnl).toLocaleString()}`}
           </div>
+          <div className="text-xs text-slate-500 mt-0.5">{strategy.positions} pos</div>
         </div>
       </div>
 
       <div>
         <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Signal Confidence</div>
-        <ConfidenceBar value={strategy.signalConfidence} />
+        <ConfidenceBar value={strategy.signal_confidence} />
       </div>
 
       <div className="border-t border-slate-700/50 pt-2">
         <button
-          onClick={() => onToggle(strategy.id)}
-          disabled={strategy.status === 'halted'}
+          onClick={() => onToggle(strategy.strategy_key)}
+          disabled={!canToggle}
           className={`text-xs font-mono px-3 py-1 rounded border transition-colors ${
-            strategy.status === 'halted'
+            !canToggle
               ? 'border-slate-700 text-slate-600 cursor-not-allowed'
               : strategy.status === 'active'
                 ? 'border-red-500/40 text-red-400 hover:bg-red-500/10'
                 : 'border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10'
           }`}
         >
-          {strategy.status === 'active' ? 'Halt Strategy' : strategy.status === 'paper' ? 'Go Live' : 'Halted'}
+          {strategy.status === 'active'
+            ? 'Halt Strategy'
+            : strategy.status === 'paper'
+              ? 'Go Live'
+              : strategy.status === 'backtesting'
+                ? 'Backtesting…'
+                : 'Halted'}
         </button>
       </div>
     </div>
@@ -175,16 +173,12 @@ function StrategyCard({ strategy, onToggle }: StrategyCardProps) {
 // ── Regime timeline chart ─────────────────────────────────────────────────────
 
 const REGIME_COLORS: Record<Regime, string> = {
-  bull: '#38bdf8',
-  bear: '#f87171',
+  bull:     '#38bdf8',
+  bear:     '#f87171',
   sideways: '#94a3b8',
 };
 
-interface RegimeChartProps {
-  points: RegimePoint[];
-}
-
-function RegimeChart({ points }: RegimeChartProps) {
+function RegimeChart({ points }: { points: RegimePoint[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const equitySeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
@@ -217,18 +211,15 @@ function RegimeChart({ points }: RegimeChartProps) {
       handleScale: false,
     });
 
-    // Color each segment by regime
     const equitySeries = chart.addLineSeries({
       lineWidth: 2,
       color: '#38bdf8',
       priceFormat: { type: 'custom', formatter: (v: number) => `$${(v / 1000).toFixed(0)}k`, minMove: 1 },
     });
 
-    // Build colored area segments by splitting the data by regime change
     let segStart = 0;
     for (let i = 1; i <= points.length; i++) {
-      const regimeChanged = i === points.length || points[i].regime !== points[segStart].regime;
-      if (regimeChanged) {
+      if (i === points.length || points[i].regime !== points[segStart].regime) {
         const segment = points.slice(segStart, i);
         const color = REGIME_COLORS[points[segStart].regime];
         const seg = chart.addAreaSeries({
@@ -251,9 +242,7 @@ function RegimeChart({ points }: RegimeChartProps) {
     chartRef.current = chart;
 
     const handleResize = () => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
-      }
+      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth });
     };
     window.addEventListener('resize', handleResize);
 
@@ -305,10 +294,7 @@ function ConfirmModal({ strategyName, action, onConfirm, onCancel }: ConfirmModa
             : `This will switch "${strategyName}" from paper trading to live execution.`}
         </p>
         <div className="flex gap-3 justify-end">
-          <button
-            onClick={onCancel}
-            className="px-4 py-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors"
-          >
+          <button onClick={onCancel} className="px-4 py-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
             Cancel
           </button>
           <button
@@ -327,39 +313,81 @@ function ConfirmModal({ strategyName, action, onConfirm, onCancel }: ConfirmModa
   );
 }
 
+// ── Category section header ───────────────────────────────────────────────────
+
+function CategoryHeader({ category }: { category: StrategyCategory }) {
+  const cfg: Record<StrategyCategory, string> = {
+    'Time-series':     'text-cyan-400 border-cyan-500/20',
+    'Factor':          'text-purple-400 border-purple-500/20',
+    'Cross-sectional': 'text-orange-400 border-orange-500/20',
+  };
+  return (
+    <div className={`text-xs font-mono font-semibold uppercase tracking-widest border-b pb-1 mb-2 ${cfg[category]}`}>
+      {category}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export function StrategyMonitorPage() {
-  const [strategies, setStrategies] = useState<StrategyState[]>(buildMockStrategies);
-  const [regimePoints] = useState<RegimePoint[]>(buildMockRegimeTimeline);
-  const [pendingToggle, setPendingToggle] = useState<{ id: string; action: 'halt' | 'live' } | null>(null);
+const CATEGORIES: StrategyCategory[] = ['Time-series', 'Factor', 'Cross-sectional'];
 
-  const handleToggle = (id: string) => {
-    const strat = strategies.find((s) => s.id === id);
-    if (!strat || strat.status === 'halted') return;
-    setPendingToggle({ id, action: strat.status === 'active' ? 'halt' : 'live' });
+export function StrategyMonitorPage() {
+  // Live strategy states from WebSocket — seed from REST on mount
+  const { strategyStates, connected } = useWebSocket();
+  const [localStates, setLocalStates] = useState<Map<string, StrategyState>>(new Map());
+  const [regimePoints] = useState<RegimePoint[]>(buildMockRegimeTimeline);
+  const [pendingToggle, setPendingToggle] = useState<{ key: string; action: 'halt' | 'live' } | null>(null);
+
+  // Seed from REST on mount (WebSocket takes over immediately after connect)
+  useEffect(() => {
+    fetch('/api/strategies')
+      .then((r) => r.json())
+      .then((data: StrategyState[]) => {
+        setLocalStates((prev) => {
+          if (prev.size > 0) return prev; // WS already populated
+          const m = new Map<string, StrategyState>();
+          for (const s of data) m.set(s.strategy_key, s);
+          return m;
+        });
+      })
+      .catch(() => {}); // server may not be running in dev
+  }, []);
+
+  // Merge live WS updates
+  useEffect(() => {
+    if (strategyStates.size === 0) return;
+    setLocalStates(strategyStates);
+  }, [strategyStates]);
+
+  const strategies = Array.from(localStates.values());
+
+  const handleToggle = (key: string) => {
+    const strat = localStates.get(key);
+    if (!strat || (strat.status !== 'active' && strat.status !== 'paper')) return;
+    setPendingToggle({ key, action: strat.status === 'active' ? 'halt' : 'live' });
   };
 
   const handleConfirm = () => {
     if (!pendingToggle) return;
-    setStrategies((prev) =>
-      prev.map((s) => {
-        if (s.id !== pendingToggle.id) return s;
-        return { ...s, status: pendingToggle.action === 'halt' ? 'halted' : 'active' };
-      }),
-    );
+    setLocalStates((prev) => {
+      const next = new Map(prev);
+      const s = next.get(pendingToggle.key);
+      if (s) next.set(s.strategy_key, { ...s, status: pendingToggle.action === 'halt' ? 'halted' : 'active' });
+      return next;
+    });
     setPendingToggle(null);
   };
 
-  const pendingStrategy = pendingToggle ? strategies.find((s) => s.id === pendingToggle.id) : null;
-
-  const totalDailyPnl = strategies.reduce((s, r) => s + r.dailyPnl, 0);
+  const pendingStrategy = pendingToggle ? localStates.get(pendingToggle.key) : null;
+  const totalDailyPnl = strategies.reduce((s, r) => s + r.daily_pnl, 0);
   const activeCount = strategies.filter((s) => s.status === 'active').length;
+  const totalPositions = strategies.reduce((s, r) => s + r.positions, 0);
 
   return (
     <div className="flex flex-col gap-4 p-4 min-h-0 overflow-y-auto">
       {/* Header stats */}
-      <div className="flex items-center gap-4 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap">
         <div className="bg-slate-800/60 border border-slate-700/50 rounded-lg px-4 py-2.5 flex flex-col gap-0.5">
           <span className="text-xs text-slate-500 uppercase tracking-wide">Active Strategies</span>
           <span className="font-mono text-lg font-semibold text-slate-100">{activeCount} / {strategies.length}</span>
@@ -370,19 +398,31 @@ export function StrategyMonitorPage() {
             {totalDailyPnl >= 0 ? '+' : ''}${totalDailyPnl.toLocaleString()}
           </span>
         </div>
-        <div className="ml-auto">
-          <span className="text-xs text-slate-600 bg-slate-800/60 border border-slate-700/50 rounded px-2 py-1 font-mono">
-            mock data · wiring blocked on QUA-22
-          </span>
+        <div className="bg-slate-800/60 border border-slate-700/50 rounded-lg px-4 py-2.5 flex flex-col gap-0.5">
+          <span className="text-xs text-slate-500 uppercase tracking-wide">Open Positions</span>
+          <span className="font-mono text-lg font-semibold text-slate-100">{totalPositions}</span>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <span className={`inline-block w-2 h-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-slate-600'}`} />
+          <span className="text-xs text-slate-500 font-mono">{connected ? 'live' : 'connecting…'}</span>
         </div>
       </div>
 
-      {/* Strategy cards grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-        {strategies.map((s) => (
-          <StrategyCard key={s.id} strategy={s} onToggle={handleToggle} />
-        ))}
-      </div>
+      {/* Strategy cards grouped by category */}
+      {CATEGORIES.map((cat) => {
+        const group = strategies.filter((s) => s.category === cat);
+        if (group.length === 0) return null;
+        return (
+          <div key={cat}>
+            <CategoryHeader category={cat} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+              {group.map((s) => (
+                <StrategyCard key={s.strategy_key} strategy={s} onToggle={handleToggle} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
 
       {/* Regime timeline */}
       <RegimeChart points={regimePoints} />
