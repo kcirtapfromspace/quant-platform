@@ -19,6 +19,13 @@ from quant.risk.drawdown_scaler import (
     ScalerState,
 )
 from quant.risk.engine import RiskCheckResult, RiskConfig, RiskEngine
+from quant.risk.hedge_optimizer import (
+    HedgeCandidate,
+    HedgeConfig,
+    HedgeOptimizer,
+    RiskProfile,
+    RiskProfilePoint,
+)
 from quant.risk.limit_checker import (
     BreachSeverity,
     LimitBreach,
@@ -60,6 +67,9 @@ __all__ = [
     "EstimationMethod",
     "ExposureLimits",
     "FactorRiskContrib",
+    "HedgeCandidate",
+    "HedgeConfig",
+    "HedgeOptimizer",
     "HealthLevel",
     "LimitBreach",
     "LimitCheckReport",
@@ -72,6 +82,8 @@ __all__ = [
     "PositionRisk",
     "PositionSizer",
     "RiskCheckResult",
+    "RiskProfile",
+    "RiskProfilePoint",
     "RiskConfig",
     "RiskDecomposer",
     "RiskDecompositionResult",
