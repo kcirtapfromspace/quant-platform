@@ -1,0 +1,26 @@
+{
+  "mean_reversion_standalone": {
+    "oos_sharpe": 1.2222461481159088,
+    "profit_factor": 1.2758257607310162,
+    "wf_efficiency": 1.0223403737025554,
+    "max_drawdown": 0.17432171519953804,
+    "n_folds": 64,
+    "passes": true
+  },
+  "baseline_mvp_ensemble": {
+    "oos_sharpe": 1.0077332930757874,
+    "profit_factor": 1.229941976928388,
+    "wf_efficiency": 0.8889938520902907,
+    "max_drawdown": 0.20299783826081172,
+    "n_folds": 64,
+    "passes": false
+  },
+  "signal_expansion_ensemble": {
+    "oos_sharpe": 1.034476144170732,
+    "profit_factor": 1.236544497230164,
+    "wf_efficiency": 0.8994395492011513,
+    "max_drawdown": 0.1983365153429904,
+    "n_folds": 64,
+    "passes": true
+  }
+}
