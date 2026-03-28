@@ -233,6 +233,106 @@ app.get('/api/backtest/:symbol', async (req, res) => {
   res.json(result);
 });
 
+// ── Analytics endpoints ────────────────────────────────────────────────────────
+
+app.get('/api/analytics/performance', async (req, res) => {
+  const symbol = ((req.query.symbol as string) || 'AAPL').toUpperCase();
+  const range = (req.query.range as string) || '1y';
+  const benchmarkParam = ((req.query.benchmark as string) || 'SPY').toUpperCase();
+  const benchmarkSymbol = benchmarkParam === 'BTC' ? 'BTC-USD' : benchmarkParam;
+
+  const [stratBars, benchBars] = await Promise.all([
+    fetchHistory(symbol, range, '1d'),
+    fetchHistory(benchmarkSymbol, range, '1d'),
+  ]);
+
+  if (stratBars.length < 30) {
+    return res.status(422).json({ error: `Insufficient data for ${symbol}` });
+  }
+
+  // Align by time — use intersection
+  const benchByTime = new Map(benchBars.map((b) => [b.time, b.close]));
+  const alignedTimes = stratBars.map((b) => b.time).filter((t) => benchByTime.has(t));
+  const stratByTime = new Map(stratBars.map((b) => [b.time, b.close]));
+
+  const stratCloses = alignedTimes.map((t) => stratByTime.get(t)!);
+  const benchCloses = alignedTimes.map((t) => benchByTime.get(t)!);
+  const n = alignedTimes.length;
+
+  const stratReturns = stratCloses.map((c, i) =>
+    i === 0 ? 0 : (c - stratCloses[i - 1]) / stratCloses[i - 1],
+  );
+  const benchReturns = benchCloses.map((c, i) =>
+    i === 0 ? 0 : (c - benchCloses[i - 1]) / benchCloses[i - 1],
+  );
+
+  // Cumulative returns (percentage from start)
+  let sc = 1;
+  let bc = 1;
+  const cumulativeReturns: Array<{ time: number; value: number }> = [];
+  const benchmarkReturns: Array<{ time: number; value: number }> = [];
+  for (let i = 0; i < n; i++) {
+    sc *= 1 + stratReturns[i];
+    bc *= 1 + benchReturns[i];
+    cumulativeReturns.push({ time: alignedTimes[i], value: (sc - 1) * 100 });
+    benchmarkReturns.push({ time: alignedTimes[i], value: (bc - 1) * 100 });
+  }
+
+  // Relative performance (strategy − benchmark, cumulative)
+  const relativePerf = alignedTimes.map((t, i) => ({
+    time: t,
+    value: cumulativeReturns[i].value - benchmarkReturns[i].value,
+  }));
+
+  // Rolling 30-day metrics (window = 30 bars)
+  const WINDOW = 30;
+  const rolling30dReturns: Array<{ time: number; value: number }> = [];
+  const rolling30dSharpe: Array<{ time: number; value: number }> = [];
+
+  for (let i = WINDOW - 1; i < n; i++) {
+    const window = stratReturns.slice(i - WINDOW + 1, i + 1);
+    const compound = window.reduce((acc, r) => acc * (1 + r), 1) - 1;
+    rolling30dReturns.push({ time: alignedTimes[i], value: compound * 100 });
+
+    const wMean = window.reduce((a, b) => a + b, 0) / WINDOW;
+    const wVar = window.reduce((a, r) => a + (r - wMean) ** 2, 0) / Math.max(WINDOW - 1, 1);
+    const sharpe = wVar > 0 ? (wMean / Math.sqrt(wVar)) * Math.sqrt(252) : 0;
+    rolling30dSharpe.push({ time: alignedTimes[i], value: sharpe });
+  }
+
+  // Distribution stats (skip first return = 0)
+  const returns = stratReturns.slice(1);
+  const rn = returns.length;
+  const mean = returns.reduce((a, b) => a + b, 0) / rn;
+  const variance = returns.reduce((a, r) => a + (r - mean) ** 2, 0) / Math.max(rn - 1, 1);
+  const stddev = Math.sqrt(variance);
+  const skewness =
+    stddev > 0 ? returns.reduce((a, r) => a + ((r - mean) / stddev) ** 3, 0) / rn : 0;
+  const kurtosis =
+    stddev > 0 ? returns.reduce((a, r) => a + ((r - mean) / stddev) ** 4, 0) / rn - 3 : 0;
+
+  res.json({
+    cumulativeReturns,
+    benchmarkReturns,
+    relativePerf,
+    rolling30dReturns,
+    rolling30dSharpe,
+    dailyReturns: returns,
+    stats: { mean, stddev, skewness, kurtosis },
+  });
+});
+
+app.get('/api/analytics/attribution', (_req, res) => {
+  const rows = [
+    { strategy: 'Momentum — AAPL/NVDA', return: 0.142, weight: 0.30 },
+    { strategy: 'Mean Reversion — SPY', return: 0.067, weight: 0.25 },
+    { strategy: 'Pairs — MSFT/GOOGL', return: 0.089, weight: 0.20 },
+    { strategy: 'Trend — NVDA/TSLA', return: 0.231, weight: 0.15 },
+    { strategy: 'Stat Arb — JPM/V', return: 0.034, weight: 0.10 },
+  ].map((r) => ({ ...r, contribution: r.return * r.weight }));
+  res.json(rows);
+});
+
 // --- Server + WebSocket ---
 
 const server = createServer(app);

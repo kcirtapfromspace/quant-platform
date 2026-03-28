@@ -11,6 +11,7 @@ import { BacktestPage } from './pages/BacktestPage';
 import { PortfolioDashboard } from './pages/PortfolioDashboard';
 import { MarketDataPage } from './pages/MarketDataPage';
 import { TradeBlotterPage } from './pages/TradeBlotterPage';
+import { AnalyticsPage } from './pages/AnalyticsPage';
 
 function PlaceholderPage({ title }: { title: string }) {
   return (
@@ -98,7 +99,9 @@ export default function App() {
         )}
 
         {view === 'analytics' && (
-          <PlaceholderPage title="Analytics" />
+          <div className="flex-1 overflow-y-auto">
+            <AnalyticsPage />
+          </div>
         )}
       </div>
     </div>
