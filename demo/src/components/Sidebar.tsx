@@ -1,9 +1,9 @@
 import { useState } from 'react';
 
-export type View = 'trading' | 'portfolio' | 'market-data' | 'trade-blotter' | 'backtest' | 'analytics';
+export type View = 'trading' | 'portfolio' | 'market-data' | 'trade-blotter' | 'backtest' | 'analytics' | 'strategy-monitor' | 'risk';
 
 interface NavItem {
-  id: View | 'strategy-monitor' | 'risk';
+  id: View;
   label: string;
   icon: React.ReactNode;
   disabled?: boolean;
@@ -108,11 +108,11 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'trade-blotter', label: 'Trade Blotter', icon: <BlotterIcon /> },
   { id: 'backtest', label: 'Backtest', icon: <BacktestIcon /> },
   { id: 'analytics', label: 'Analytics', icon: <AnalyticsIcon /> },
-  { id: 'strategy-monitor', label: 'Strategy Monitor', icon: <StrategyIcon />, disabled: true },
-  { id: 'risk', label: 'Risk', icon: <RiskIcon />, disabled: true },
+  { id: 'strategy-monitor', label: 'Strategy Monitor', icon: <StrategyIcon /> },
+  { id: 'risk', label: 'Risk', icon: <RiskIcon /> },
 ];
 
-const ACTIVE_VIEWS = new Set<string>(['trading', 'portfolio', 'market-data', 'trade-blotter', 'backtest', 'analytics']);
+const ACTIVE_VIEWS = new Set<string>(['trading', 'portfolio', 'market-data', 'trade-blotter', 'backtest', 'analytics', 'strategy-monitor', 'risk']);
 
 export function Sidebar({ view, onViewChange }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);

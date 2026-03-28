@@ -333,6 +333,39 @@ app.get('/api/analytics/attribution', (_req, res) => {
   res.json(rows);
 });
 
+// ── Strategy Monitor stub endpoints ───────────────────────────────────────────
+
+app.get('/api/strategies', (_req, res) => {
+  res.json([
+    { id: 's1', name: 'Momentum — AAPL/NVDA', status: 'active', regime: 'bull', dailyPnl: 4820, signalConfidence: 82 },
+    { id: 's2', name: 'Mean Reversion — SPY', status: 'active', regime: 'sideways', dailyPnl: -1230, signalConfidence: 61 },
+    { id: 's3', name: 'Pairs — MSFT/GOOGL', status: 'paper', regime: 'sideways', dailyPnl: 890, signalConfidence: 74 },
+    { id: 's4', name: 'Trend Following — NVDA', status: 'active', regime: 'bull', dailyPnl: 9340, signalConfidence: 91 },
+    { id: 's5', name: 'Stat Arb — JPM/V', status: 'halted', regime: 'bear', dailyPnl: -2450, signalConfidence: 38 },
+  ]);
+});
+
+// ── Risk Dashboard stub endpoint ───────────────────────────────────────────────
+
+app.get('/api/risk/snapshot', (_req, res) => {
+  res.json({
+    var95: 0.0187,
+    var99: 0.0312,
+    drawdown: 0.0423,
+    maxDrawdown: 0.1128,
+    circuitBreakerArmed: false,
+    positionLimitUtilization: [
+      { symbol: 'AAPL', utilization: 0.72 },
+      { symbol: 'NVDA', utilization: 0.88 },
+      { symbol: 'MSFT', utilization: 0.51 },
+      { symbol: 'GOOGL', utilization: 0.64 },
+      { symbol: 'TSLA', utilization: 0.93 },
+      { symbol: 'JPM', utilization: 0.38 },
+      { symbol: 'META', utilization: 0.47 },
+    ],
+  });
+});
+
 // --- Server + WebSocket ---
 
 const server = createServer(app);

@@ -12,6 +12,8 @@ import { PortfolioDashboard } from './pages/PortfolioDashboard';
 import { MarketDataPage } from './pages/MarketDataPage';
 import { TradeBlotterPage } from './pages/TradeBlotterPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
+import { StrategyMonitorPage } from './pages/StrategyMonitorPage';
+import { RiskDashboardPage } from './pages/RiskDashboardPage';
 
 function PlaceholderPage({ title }: { title: string }) {
   return (
@@ -101,6 +103,18 @@ export default function App() {
         {view === 'analytics' && (
           <div className="flex-1 overflow-y-auto">
             <AnalyticsPage />
+          </div>
+        )}
+
+        {view === 'strategy-monitor' && (
+          <div className="flex-1 overflow-y-auto">
+            <StrategyMonitorPage />
+          </div>
+        )}
+
+        {view === 'risk' && (
+          <div className="flex-1 overflow-y-auto">
+            <RiskDashboardPage />
           </div>
         )}
       </div>
