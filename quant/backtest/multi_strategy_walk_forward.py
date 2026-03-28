@@ -266,11 +266,21 @@ class MultiStrategyWalkForwardAnalyzer:
         oos_equity_segments: list[pd.Series] = []
         oos_return_segments: list[pd.Series] = []
 
+        # Lookback days prepended to OOS windows for signal warmup.
+        # Signals (e.g. MACD, slow MA) need history beyond the OOS window
+        # to produce non-zero output.  We include IS tail as lookback and
+        # set min_history to skip trading during the prefix.
+        oos_lookback = config.multi_strategy_config.min_history
+
         for fold_idx, (is_start, is_end, oos_start, oos_end) in enumerate(
             folds_spec
         ):
             is_data = returns.iloc[is_start:is_end]
-            oos_data = returns.iloc[oos_start:oos_end]
+
+            # OOS: prepend lookback from IS tail so signals can warm up
+            oos_lb_start = max(0, oos_start - oos_lookback)
+            oos_data_with_lb = returns.iloc[oos_lb_start:oos_end]
+            oos_lb_len = oos_start - oos_lb_start  # days of warmup prefix
 
             # Build fold-specific config with adjusted min_history
             fold_ms_config = self._build_fold_config(
@@ -280,11 +290,13 @@ class MultiStrategyWalkForwardAnalyzer:
             # Run IS backtest
             is_report = ms_engine.run(is_data, fold_ms_config)
 
-            # Run OOS backtest (same config, fresh state)
+            # Run OOS backtest with lookback prefix.
+            # min_history = lookback length so trading starts at OOS boundary.
             oos_fold_config = self._build_fold_config(
-                config.multi_strategy_config, oos_data
+                config.multi_strategy_config, oos_data_with_lb,
+                override_min_history=oos_lb_len,
             )
-            oos_report = ms_engine.run(oos_data, oos_fold_config)
+            oos_report = ms_engine.run(oos_data_with_lb, oos_fold_config)
 
             # WFE: OOS Sharpe / IS Sharpe (clamped)
             if abs(is_report.sharpe_ratio) > 0.01:
@@ -361,10 +373,15 @@ class MultiStrategyWalkForwardAnalyzer:
 
     @staticmethod
     def _build_fold_config(
-        base: MultiStrategyConfig, fold_data: pd.DataFrame
+        base: MultiStrategyConfig,
+        fold_data: pd.DataFrame,
+        override_min_history: int | None = None,
     ) -> MultiStrategyConfig:
         """Create a fold-specific MultiStrategyConfig with safe min_history."""
-        safe_min = min(base.min_history, len(fold_data) // 3)
+        if override_min_history is not None:
+            safe_min = override_min_history
+        else:
+            safe_min = min(base.min_history, len(fold_data) // 3)
         return MultiStrategyConfig(
             sleeves=base.sleeves,
             rebalance_frequency=base.rebalance_frequency,

@@ -234,7 +234,7 @@ class TrendFollowingSignalFromReturns(BaseSignal):
 
 def _portfolio_config(
     method: OptimizationMethod = OptimizationMethod.MEAN_VARIANCE,
-    risk_aversion: float = 2.0,
+    risk_aversion: float = 5.0,
 ) -> PortfolioConfig:
     """Portfolio config.
 
@@ -484,7 +484,7 @@ def run1a_momentum_standalone(
         commission_bps=10.0,
         initial_capital=1_000_000.0,
         sector_map=sector_map,
-        min_history=60,
+        min_history=100,
         name="run1a_momentum_standalone",
     )
     analyzer = MultiStrategyWalkForwardAnalyzer()
@@ -513,7 +513,7 @@ def run1b_trend_standalone(
         commission_bps=10.0,
         initial_capital=1_000_000.0,
         sector_map=sector_map,
-        min_history=60,
+        min_history=100,
         name="run1b_trend_standalone",
     )
     analyzer = MultiStrategyWalkForwardAnalyzer()
@@ -543,7 +543,7 @@ def run1c_combined_standalone(
         commission_bps=10.0,
         initial_capital=1_000_000.0,
         sector_map=sector_map,
-        min_history=60,
+        min_history=100,
         name="run1c_combined_equal_weight",
     )
     analyzer = MultiStrategyWalkForwardAnalyzer()
@@ -600,7 +600,7 @@ def run2_full_ensemble(
         # circuit_breaker omitted: the CB object is shared across all WF folds
         # (via _build_fold_config reference copy), causing state contamination where
         # the IS peak value bleeds into OOS runs and trips the breaker immediately.
-        min_history=60,
+        min_history=100,
         name="run2_full_ensemble",
     )
     analyzer = MultiStrategyWalkForwardAnalyzer()
@@ -635,7 +635,7 @@ def run3_sensitivity(
             commission_bps=10.0,
             initial_capital=1_000_000.0,
             sector_map=sector_map,
-            min_history=60,
+            min_history=100,
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
@@ -662,7 +662,7 @@ def run3_sensitivity(
             commission_bps=10.0,
             initial_capital=1_000_000.0,
             sector_map=sector_map,
-            min_history=60,
+            min_history=100,
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
@@ -717,7 +717,7 @@ def run3_sensitivity(
             regime_adapter=RegimeWeightAdapter(max_tilt=0.30),
             regime_lookback_days=252,
             # circuit_breaker omitted: see run2 comment (CB state contamination)
-            min_history=60,
+            min_history=100,
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
@@ -767,7 +767,7 @@ def run3_sensitivity(
             regime_adapter=RegimeWeightAdapter(max_tilt=max_tilt) if max_tilt > 0.0 else None,
             regime_lookback_days=252,
             # circuit_breaker omitted: see run2 comment (CB state contamination)
-            min_history=60,
+            min_history=100,
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
