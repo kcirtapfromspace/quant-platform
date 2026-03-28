@@ -29,12 +29,20 @@ from quant.execution.quality_tracker import (
     QualityConfig,
     StrategyExecStats,
 )
+from quant.execution.schedule_optimizer import (
+    CostBreakdown,
+    FrontierPoint,
+    ScheduleConfig,
+    ScheduleOptimizer,
+    ScheduleResult,
+)
 from quant.execution.tca import ExecutionRecord, TCACollector, TCAReport
 
 __all__ = [
     "AlpacaAdapter",
     "CapacityEstimate",
     "CCXTAdapter",
+    "CostBreakdown",
     "CostEstimate",
     "CostModelConfig",
     "ExecutionQualityTracker",
@@ -43,12 +51,16 @@ __all__ = [
     "ExecutionSimulator",
     "ExecutionSummary",
     "FillModel",
+    "FrontierPoint",
     "IBAdapter",
     "OrderFill",
     "OrderSlice",
     "PaperBrokerAdapter",
     "QualityConfig",
     "RebalanceCostEstimate",
+    "ScheduleConfig",
+    "ScheduleOptimizer",
+    "ScheduleResult",
     "SimulatorConfig",
     "StrategyExecStats",
     "TransactionCostModel",
