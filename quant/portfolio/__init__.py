@@ -51,6 +51,13 @@ from quant.portfolio.pre_trade import (
     PreTradeResult,
     TradeAdjustment,
 )
+from quant.portfolio.rebalance_trigger import (
+    CalendarFrequency,
+    RebalanceTrigger,
+    TriggerConfig,
+    TriggerDecision,
+    TriggerReason,
+)
 from quant.portfolio.rebalancer import RebalanceEngine, RebalanceResult, Trade
 from quant.portfolio.strategy_correlation import (
     CrowdingAlert,
@@ -123,6 +130,12 @@ __all__ = [
     "ScaledPosition",
     "ScalingConfig",
     "ScalingMethod",
+    # Rebalance trigger
+    "CalendarFrequency",
+    "RebalanceTrigger",
+    "TriggerConfig",
+    "TriggerDecision",
+    "TriggerReason",
     # Rebalancer
     "RebalanceEngine",
     "RebalanceResult",
