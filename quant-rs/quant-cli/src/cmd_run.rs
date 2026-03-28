@@ -191,7 +191,10 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
     let pnl_cumulative = oms.portfolio_value() - args.cash;
     let daily_pnl_pct = pnl_cumulative / args.cash;
     if let Err(e) = write_paper_metrics(&args.metrics_file, pnl_cumulative, daily_pnl_pct) {
-        warn!("failed to write paper metrics to {}: {e}", args.metrics_file);
+        warn!(
+            "failed to write paper metrics to {}: {e}",
+            args.metrics_file
+        );
     }
 
     Ok(())
