@@ -1992,6 +1992,9 @@ name = "quant-bayes"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
+ "quant-backtest",
+ "quant-features",
+ "quant-signals",
  "rand 0.8.5",
  "rv",
 ]

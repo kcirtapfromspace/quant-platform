@@ -63,8 +63,7 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
     info!("{} symbols loaded with {} bars", n, bars);
 
     // ── 2. Signal-driven alpha scores ─────────────────────────────────────
-    let alpha_scores =
-        generate_alpha_scores(&store, &symbols_ordered, args.lookback_days)?;
+    let alpha_scores = generate_alpha_scores(&store, &symbols_ordered, args.lookback_days)?;
 
     // ── 3. Covariance matrix ──────────────────────────────────────────────
     // Pass None for shrinkage to use Ledoit-Wolf automatic estimation.
@@ -302,8 +301,7 @@ fn compute_symbol_alpha(adj_close: &[f64]) -> Option<SignalDecomposition> {
     let slow_ma = qf::ema(adj_close, 26);
 
     let (mom_score, mom_conf, _) = momentum_signal(&rsi_values, &rets, 20, 0.02);
-    let (mr_score, mr_conf, _) =
-        mean_reversion_signal(&bb_mid, &bb_upper, &bb_lower, &rets, 2.0);
+    let (mr_score, mr_conf, _) = mean_reversion_signal(&bb_mid, &bb_upper, &bb_lower, &rets, 2.0);
     let (tf_score, tf_conf, _) = trend_following_signal(&macd_hist, &fast_ma, &slow_ma);
 
     let signal_inputs = vec![
@@ -358,15 +356,22 @@ fn generate_alpha_scores(
                 info!(
                     "{}: mom={:.2}/{:.2}  mr={:.2}/{:.2}  tf={:.2}/{:.2}  → alpha={:.3}",
                     sym,
-                    decomp.momentum.0, decomp.momentum.1,
-                    decomp.mean_reversion.0, decomp.mean_reversion.1,
-                    decomp.trend_following.0, decomp.trend_following.1,
+                    decomp.momentum.0,
+                    decomp.momentum.1,
+                    decomp.mean_reversion.0,
+                    decomp.mean_reversion.1,
+                    decomp.trend_following.0,
+                    decomp.trend_following.1,
                     decomp.combined_alpha,
                 );
                 alpha_scores.push(decomp.combined_alpha);
             }
             None => {
-                info!("{}: insufficient history ({} bars), using neutral alpha", sym, adj_close.len());
+                info!(
+                    "{}: insufficient history ({} bars), using neutral alpha",
+                    sym,
+                    adj_close.len()
+                );
                 alpha_scores.push(0.0);
             }
         }
@@ -451,14 +456,22 @@ mod tests {
         let prices: Vec<f64> = (0..252).map(|i| 100.0 * 1.003_f64.powi(i)).collect();
         let decomp = compute_symbol_alpha(&prices).unwrap();
         // Momentum (RSI-based) should be positive in strong uptrend
-        assert!(decomp.momentum.0 > 0.0, "momentum score={}", decomp.momentum.0);
+        assert!(
+            decomp.momentum.0 > 0.0,
+            "momentum score={}",
+            decomp.momentum.0
+        );
     }
 
     #[test]
     fn test_strong_downtrend_produces_negative_momentum() {
         let prices: Vec<f64> = (0..252).map(|i| 200.0 * 0.997_f64.powi(i)).collect();
         let decomp = compute_symbol_alpha(&prices).unwrap();
-        assert!(decomp.momentum.0 < 0.0, "momentum score={}", decomp.momentum.0);
+        assert!(
+            decomp.momentum.0 < 0.0,
+            "momentum score={}",
+            decomp.momentum.0
+        );
     }
 
     #[test]
@@ -466,7 +479,11 @@ mod tests {
         let prices = vec![100.0_f64; 252];
         let decomp = compute_symbol_alpha(&prices).unwrap();
         // Flat prices → all signals near zero
-        assert!(decomp.combined_alpha.abs() < 0.3, "alpha={}", decomp.combined_alpha);
+        assert!(
+            decomp.combined_alpha.abs() < 0.3,
+            "alpha={}",
+            decomp.combined_alpha
+        );
     }
 
     #[test]
@@ -484,9 +501,18 @@ mod tests {
 
     #[test]
     fn test_parse_optimizer_variants() {
-        assert_eq!(parse_optimizer("equal_weight").unwrap(), OptimizationMethod::EqualWeight);
-        assert_eq!(parse_optimizer("risk_parity").unwrap(), OptimizationMethod::RiskParity);
-        assert_eq!(parse_optimizer("min_variance").unwrap(), OptimizationMethod::MinVariance);
+        assert_eq!(
+            parse_optimizer("equal_weight").unwrap(),
+            OptimizationMethod::EqualWeight
+        );
+        assert_eq!(
+            parse_optimizer("risk_parity").unwrap(),
+            OptimizationMethod::RiskParity
+        );
+        assert_eq!(
+            parse_optimizer("min_variance").unwrap(),
+            OptimizationMethod::MinVariance
+        );
         assert!(parse_optimizer("unknown").is_err());
     }
 }

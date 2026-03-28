@@ -105,10 +105,7 @@ impl HmmRegimeModel {
         let std0 = if low_vol_obs.len() < 2 {
             std_all * 0.5
         } else {
-            let v = low_vol_obs
-                .iter()
-                .map(|x| (x - mean0).powi(2))
-                .sum::<f64>()
+            let v = low_vol_obs.iter().map(|x| (x - mean0).powi(2)).sum::<f64>()
                 / (low_vol_obs.len() - 1) as f64;
             v.sqrt().max(1e-10)
         };
@@ -216,12 +213,7 @@ impl HmmRegimeModel {
     }
 
     /// Joint transition probabilities ξ[t][i][j] = P(S_t=i, S_{t+1}=j | obs).
-    fn compute_xi(
-        &self,
-        obs: &[f64],
-        alpha: &[[f64; 2]],
-        beta: &[[f64; 2]],
-    ) -> Vec<[[f64; 2]; 2]> {
+    fn compute_xi(&self, obs: &[f64], alpha: &[[f64; 2]], beta: &[[f64; 2]]) -> Vec<[[f64; 2]; 2]> {
         let n = obs.len();
         (0..n - 1)
             .map(|t| {
@@ -271,14 +263,16 @@ impl HmmRegimeModel {
         }
 
         // Emission parameters
-        for s in 0..2 {
+        for s in [0usize, 1] {
             let denom: f64 = (0..n).map(|t| gamma[t][s]).sum();
             if denom < 1e-300 {
                 continue;
             }
             let mean: f64 = (0..n).map(|t| gamma[t][s] * obs[t]).sum::<f64>() / denom;
-            let var: f64 =
-                (0..n).map(|t| gamma[t][s] * (obs[t] - mean).powi(2)).sum::<f64>() / denom;
+            let var: f64 = (0..n)
+                .map(|t| gamma[t][s] * (obs[t] - mean).powi(2))
+                .sum::<f64>()
+                / denom;
             self.means[s] = mean;
             self.stds[s] = var.sqrt().max(1e-8);
         }
@@ -327,10 +321,10 @@ impl HmmRegimeModel {
     /// transition matrix, then weights by the Gaussian emission likelihood.
     pub fn update(&mut self, obs: f64) {
         // Predict: marginalise over previous state
-        let p0 = self.state_probs[0] * self.trans[(0, 0)]
-            + self.state_probs[1] * self.trans[(1, 0)];
-        let p1 = self.state_probs[0] * self.trans[(0, 1)]
-            + self.state_probs[1] * self.trans[(1, 1)];
+        let p0 =
+            self.state_probs[0] * self.trans[(0, 0)] + self.state_probs[1] * self.trans[(1, 0)];
+        let p1 =
+            self.state_probs[0] * self.trans[(0, 1)] + self.state_probs[1] * self.trans[(1, 1)];
 
         // Update: weight by emission likelihood
         let u0 = p0 * self.emission(obs, 0);
@@ -450,7 +444,10 @@ mod tests {
             model.update(0.10); // large move
         }
         let after = model.regime_probs()[1];
-        assert!(after > before || after > 0.5, "HighVol prob did not increase: {after}");
+        assert!(
+            after > before || after > 0.5,
+            "HighVol prob did not increase: {after}"
+        );
     }
 
     #[test]

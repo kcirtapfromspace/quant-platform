@@ -576,7 +576,9 @@ impl AdaptiveSignalCombiner {
     /// Create a combiner for `n_signals` slots with default hyperpriors.
     pub fn new(n_signals: usize) -> Self {
         Self {
-            trackers: (0..n_signals).map(|_| NormalGammaTracker::default()).collect(),
+            trackers: (0..n_signals)
+                .map(|_| NormalGammaTracker::default())
+                .collect(),
         }
     }
 
@@ -668,7 +670,10 @@ mod combiner_tests {
         let combiner = AdaptiveSignalCombiner::new(2);
         // Default prior mean = 0.0 → weights are 0 → fallback to average
         let result = combiner.combine(&[2.0, -2.0]);
-        assert!(result.abs() < 1e-10, "expected equal-weight average: {result}");
+        assert!(
+            result.abs() < 1e-10,
+            "expected equal-weight average: {result}"
+        );
     }
 
     #[test]

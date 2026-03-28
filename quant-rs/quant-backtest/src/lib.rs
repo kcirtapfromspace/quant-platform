@@ -376,8 +376,16 @@ pub fn run_portfolio_backtest(
     assert!(n_assets > 0, "symbols must not be empty");
 
     let n_bars = returns.len() / n_assets;
-    assert_eq!(returns.len(), n_bars * n_assets, "returns matrix size mismatch");
-    assert_eq!(signals.len(), n_bars * n_assets, "signals matrix size mismatch");
+    assert_eq!(
+        returns.len(),
+        n_bars * n_assets,
+        "returns matrix size mismatch"
+    );
+    assert_eq!(
+        signals.len(),
+        n_bars * n_assets,
+        "signals matrix size mismatch"
+    );
     assert!(n_bars > 0, "must have at least one bar");
 
     // ── Step 1: Build target-weight matrix (shifted by 1 bar, no lookahead) ─
@@ -785,7 +793,11 @@ mod tests {
         };
         let r = run_portfolio_backtest(&syms(n), &returns, &signals, &config);
         // Zero signals → zero weights → portfolio stays flat.
-        assert!(r.total_return.abs() < 1e-12, "expected flat, got {}", r.total_return);
+        assert!(
+            r.total_return.abs() < 1e-12,
+            "expected flat, got {}",
+            r.total_return
+        );
     }
 
     #[test]
@@ -800,7 +812,10 @@ mod tests {
             rebalance_every: 1,
         };
         let r = run_portfolio_backtest(&syms(n), &returns, &signals, &config);
-        assert!(r.total_return > 0.0, "positive drift should yield positive return");
+        assert!(
+            r.total_return > 0.0,
+            "positive drift should yield positive return"
+        );
         assert!(r.cagr > 0.0);
         assert!(r.sharpe_ratio > 0.0);
     }
@@ -898,12 +913,18 @@ mod tests {
 
         // At each bar, sum of per-asset contributions ≈ portfolio gross return.
         for bar in 1..bars {
-            let contrib_sum: f64 = r.asset_attribution.iter().map(|a| a.return_contribution[bar]).sum();
+            let contrib_sum: f64 = r
+                .asset_attribution
+                .iter()
+                .map(|a| a.return_contribution[bar])
+                .sum();
             // Without commission, net_returns == gross return.
             assert!(
                 (contrib_sum - r.net_returns[bar]).abs() < 1e-12,
                 "bar {}: contrib={} vs net_ret={}",
-                bar, contrib_sum, r.net_returns[bar]
+                bar,
+                contrib_sum,
+                r.net_returns[bar]
             );
         }
     }
@@ -960,7 +981,8 @@ mod tests {
         assert!(
             (r.total_return - expected_tr).abs() < 1e-9,
             "total_return={} vs equity-derived={}",
-            r.total_return, expected_tr
+            r.total_return,
+            expected_tr
         );
     }
 
@@ -976,8 +998,14 @@ mod tests {
             ..Default::default()
         };
         let r = run_portfolio_backtest(&syms(n), &returns, &signals, &config);
-        assert!(r.max_drawdown > 0.0, "declining market should have drawdown");
-        assert!(r.total_return < 0.0, "declining market should have negative return");
+        assert!(
+            r.max_drawdown > 0.0,
+            "declining market should have drawdown"
+        );
+        assert!(
+            r.total_return < 0.0,
+            "declining market should have negative return"
+        );
     }
 
     #[test]
@@ -993,12 +1021,7 @@ mod tests {
             commission_pct: 0.0,
             rebalance_every: 1,
         };
-        let r = run_portfolio_backtest(
-            &["AAPL".to_string()],
-            &returns,
-            &signals,
-            &config,
-        );
+        let r = run_portfolio_backtest(&["AAPL".to_string()], &returns, &signals, &config);
         // With constant drift and no commission, both should compound equally.
         let expected_final = (1.0 + drift).powi((bars - 1) as i32);
         let actual_final = r.equity_curve[bars - 1];

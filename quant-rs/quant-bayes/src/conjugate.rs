@@ -87,8 +87,7 @@ impl NormalGammaTracker {
         if self.alpha_n <= 1.0 {
             return f64::INFINITY;
         }
-        let scale_sq =
-            self.beta_n * (self.kappa_n + 1.0) / (self.kappa_n * (self.alpha_n - 1.0));
+        let scale_sq = self.beta_n * (self.kappa_n + 1.0) / (self.kappa_n * (self.alpha_n - 1.0));
         scale_sq.sqrt()
     }
 }

@@ -8,6 +8,7 @@
 //! - 70 % noise (drift ≈ 0)
 //! - 15 % uptrend / 15 % downtrend (±0.25 % drift, 8-20 bar regimes)
 //! - Vol: 1.5 % daily throughout
+//!
 //! Autocorrelation is zero at the return level; predictability comes from persistent
 //! regime drift, which RSI / BB / MACD signals can partially detect after 5-7 bar lag.
 //!
@@ -103,8 +104,7 @@ fn threshold_low_vol(rolling_vols: &[f64], bar: usize) -> bool {
     let cur_vol = rolling_vols[bar];
     let window = &rolling_vols[bar.saturating_sub(60)..bar];
     let mean_v: f64 = window.iter().sum::<f64>() / window.len() as f64;
-    let var_v: f64 =
-        window.iter().map(|v| (v - mean_v).powi(2)).sum::<f64>() / window.len() as f64;
+    let var_v: f64 = window.iter().map(|v| (v - mean_v).powi(2)).sum::<f64>() / window.len() as f64;
     cur_vol <= mean_v + 1.5 * var_v.sqrt()
 }
 
@@ -390,7 +390,9 @@ fn run_wf_symbol(
             .base_trade_rets
             .extend(sr.trades.iter().map(|t| t.ret));
 
-        result.bayes_oos_rets.extend_from_slice(&br.net_returns[1..]);
+        result
+            .bayes_oos_rets
+            .extend_from_slice(&br.net_returns[1..]);
         result.base_oos_rets.extend_from_slice(&sr.net_returns[1..]);
     }
 
@@ -451,9 +453,7 @@ pub fn run_benchmark_qua68(args: BenchmarkQua68Args) -> anyhow::Result<()> {
         "  {} symbols | {} folds | {}d train | {}d OOS | {} bars/symbol",
         args.n_symbols, args.n_folds, args.train_window, args.oos_window, total_bars
     );
-    println!(
-        "  Synthetic: regime-switching GBM (15% up/15% dn trends, 1.5% daily vol)"
-    );
+    println!("  Synthetic: regime-switching GBM (15% up/15% dn trends, 1.5% daily vol)");
     println!(
         "  Variants: [Baseline] EMA-IC + vol-threshold  vs  [Bayesian] NormalGamma IC + HMM\n"
     );
@@ -468,8 +468,7 @@ pub fn run_benchmark_qua68(args: BenchmarkQua68Args) -> anyhow::Result<()> {
     let mut base_oos_sh: Vec<f64> = Vec::new();
 
     for sym in 0..args.n_symbols {
-        let seed = 0xDEAD_BEEF_u64
-            .wrapping_add((sym as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let seed = 0xDEAD_BEEF_u64.wrapping_add((sym as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let prices = synthetic_prices(total_bars, seed);
         let r = run_wf_symbol(
             &prices,
@@ -544,8 +543,16 @@ pub fn run_benchmark_qua68(args: BenchmarkQua68Args) -> anyhow::Result<()> {
 
     // ── CRO gate assessment ──────────────────────────────────────────────────
     println!("\n── CRO Gate Assessment ──────────────────────────────────────────");
-    let base_pf_v = if base_pf.is_infinite() { 999.0 } else { base_pf };
-    let bayes_pf_v = if bayes_pf.is_infinite() { 999.0 } else { bayes_pf };
+    let base_pf_v = if base_pf.is_infinite() {
+        999.0
+    } else {
+        base_pf
+    };
+    let bayes_pf_v = if bayes_pf.is_infinite() {
+        999.0
+    } else {
+        bayes_pf
+    };
 
     println!(
         "  PF target: ≥ 1.25  |  Baseline PF: {}  |  Bayesian PF: {}",
@@ -561,7 +568,10 @@ pub fn run_benchmark_qua68(args: BenchmarkQua68Args) -> anyhow::Result<()> {
             "  FAIL  Bayesian PF {:.3} < 1.25 (gap: {:.3})",
             bayes_pf_v, gap
         );
-        println!("  → Phase 1 PF delta vs baseline: {:+.3}", bayes_pf_v - base_pf_v);
+        println!(
+            "  → Phase 1 PF delta vs baseline: {:+.3}",
+            bayes_pf_v - base_pf_v
+        );
         println!("  → Recommend Phase 2: hierarchical MCMC (cross-signal covariance).");
     }
 

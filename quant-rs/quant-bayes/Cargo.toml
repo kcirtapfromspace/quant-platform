@@ -11,3 +11,8 @@ crate-type = ["rlib"]
 rv = "0.19"
 nalgebra = "0.33"
 rand = "0.8"
+
+[dev-dependencies]
+quant-backtest = { path = "../quant-backtest" }
+quant-features = { path = "../quant-features" }
+quant-signals = { path = "../quant-signals" }
