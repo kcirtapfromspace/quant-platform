@@ -35,6 +35,12 @@ from quant.backtest.comparison import (
     StrategyRow,
 )
 from quant.backtest.engine import BacktestConfig, BacktestEngine
+from quant.backtest.monte_carlo import (
+    ConfidenceInterval,
+    MonteCarloAnalyzer,
+    MonteCarloConfig,
+    MonteCarloResult,
+)
 from quant.backtest.multi_strategy import (
     MultiRebalanceSnapshot,
     MultiStrategyBacktestEngine,
@@ -72,6 +78,11 @@ __all__ = [
     "BacktestConfig",
     "BacktestEngine",
     "BacktestReport",
+    # Monte Carlo
+    "ConfidenceInterval",
+    "MonteCarloAnalyzer",
+    "MonteCarloConfig",
+    "MonteCarloResult",
     "FoldResult",
     # Multi-strategy backtest
     "MultiRebalanceSnapshot",
