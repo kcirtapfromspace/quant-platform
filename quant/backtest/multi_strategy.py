@@ -68,6 +68,7 @@ from quant.portfolio.strategy_correlation import (
 )
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig, AdaptiveSignalCombiner
 from quant.signals.base import BaseSignal, SignalOutput
+from quant.signals.regime import RegimeConfig, RegimeDetector, RegimeState, RegimeWeightAdapter
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -82,6 +83,8 @@ class SleeveConfig:
         name:               Unique sleeve identifier.
         signals:            Signal instances for this sleeve.
         capital_weight:     Fraction of total capital allocated (0–1).
+        strategy_type:      Strategy type key for regime affinity lookup
+                            (e.g. ``"momentum"``, ``"trend"``, ``"mean_reversion"``).
         portfolio_config:   Portfolio construction settings for this sleeve.
         combination_method: How to combine this sleeve's signal outputs.
         signal_weights:     Weights for STATIC_WEIGHT combination.
@@ -92,6 +95,7 @@ class SleeveConfig:
     name: str
     signals: list[BaseSignal] = field(default_factory=list)
     capital_weight: float = 1.0
+    strategy_type: str = ""
     portfolio_config: PortfolioConfig = field(default_factory=PortfolioConfig)
     combination_method: CombinationMethod = CombinationMethod.EQUAL_WEIGHT
     signal_weights: dict[str, float] | None = None
@@ -113,6 +117,12 @@ class MultiStrategyConfig:
         sector_map:             {symbol: sector} for constraint checks.
         lifecycle_config:       Lifecycle evaluation config.
         apply_lifecycle_realloc: Apply lifecycle recommendations to next period.
+        strategy_correlation_config: Cross-strategy correlation monitoring config.
+        regime_config:          Regime detector config.  When set together with
+                                ``regime_adapter``, capital weights are adjusted
+                                at each rebalance based on detected market regime.
+        regime_adapter:         Weight adapter that maps regime to capital tilts.
+        regime_lookback_days:   Number of days fed to the regime detector.
         min_history:            Min trading days before first trade.
         name:                   Label for the backtest.
     """
@@ -127,6 +137,9 @@ class MultiStrategyConfig:
     lifecycle_config: LifecycleConfig | None = None
     apply_lifecycle_realloc: bool = False
     strategy_correlation_config: StrategyCorrelationConfig | None = None
+    regime_config: RegimeConfig | None = None
+    regime_adapter: RegimeWeightAdapter | None = None
+    regime_lookback_days: int = 252
     min_history: int = 60
     name: str = "multi_strategy_backtest"
 
@@ -159,6 +172,7 @@ class MultiRebalanceSnapshot:
     n_assets: int
     lifecycle_report: LifecycleReport | None = None
     correlation_report: StrategyCorrelationReport | None = None
+    regime_state: RegimeState | None = None
 
 
 @dataclass
@@ -197,6 +211,10 @@ class MultiStrategyBacktestReport:
     # Strategy correlation (time series of avg inter-strategy correlation)
     avg_strategy_corr_history: pd.Series = field(default_factory=lambda: pd.Series(dtype=float), repr=False)
     n_crowding_events: int = 0
+
+    # Regime history (time series of regime labels at each rebalance)
+    regime_history: pd.Series = field(default_factory=lambda: pd.Series(dtype=object), repr=False)
+    n_regime_changes: int = 0
 
     def summary(self) -> str:
         """Return a human-readable summary."""
@@ -290,6 +308,15 @@ class MultiStrategyBacktestEngine:
         if config.strategy_correlation_config is not None:
             corr_monitor = StrategyCorrelationMonitor(config.strategy_correlation_config)
 
+        # Regime detector
+        regime_detector: RegimeDetector | None = None
+        regime_adapter: RegimeWeightAdapter | None = config.regime_adapter
+        if config.regime_config is not None:
+            regime_detector = RegimeDetector(config.regime_config)
+            if regime_adapter is None:
+                regime_adapter = RegimeWeightAdapter()
+        strategy_types = {sc.name: sc.strategy_type for sc in config.sleeves}
+
         # State
         portfolio_value = config.initial_capital
         weights: dict[str, float] = {}
@@ -309,6 +336,8 @@ class MultiStrategyBacktestEngine:
         rebalances: list[MultiRebalanceSnapshot] = []
         corr_records: list[tuple[object, float]] = []  # (date, avg_corr)
         n_crowding = 0
+        regime_records: list[tuple[object, str]] = []  # (date, regime_label)
+        last_regime_label: str = ""
 
         for i in range(n_days):
             dt = dates[i]
@@ -347,7 +376,29 @@ class MultiStrategyBacktestEngine:
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
 
-                # ── 2a. Run each sleeve ────────────────────────────────
+                # ── 2a. Regime detection and capital weight adjustment ──
+                regime_state: RegimeState | None = None
+                if regime_detector is not None and regime_adapter is not None:
+                    lookback = min(i + 1, config.regime_lookback_days)
+                    regime_slice = filled.iloc[i + 1 - lookback : i + 1]
+                    returns_2d: list[list[float]] = [
+                        [float(v) for v in row]
+                        for _, row in regime_slice.iterrows()
+                    ]
+                    if len(returns_2d) >= 10:
+                        regime_state = regime_detector.detect(returns=returns_2d)
+                        adjusted = regime_adapter.adapt(
+                            regime=regime_state,
+                            base_weights=capital_weights,
+                            strategy_types=strategy_types,
+                        )
+                        capital_weights = adjusted
+                        new_label = regime_state.regime.value
+                        regime_records.append((dt, new_label))
+                        if new_label != last_regime_label:
+                            last_regime_label = new_label
+
+                # ── 2b. Run each sleeve ────────────────────────────────
                 sleeve_snapshots: list[SleeveSnapshot] = []
                 combined: dict[str, float] = {}
                 cycle_alpha_scores: dict[str, dict[str, float]] = {}
@@ -499,6 +550,7 @@ class MultiStrategyBacktestEngine:
                             n_assets=sum(1 for v in combined.values() if abs(v) > 1e-9),
                             lifecycle_report=lifecycle_report,
                             correlation_report=correlation_report,
+                            regime_state=regime_state,
                         )
                     )
 
@@ -555,6 +607,19 @@ class MultiStrategyBacktestEngine:
         else:
             avg_corr_history = pd.Series(dtype=float, name="avg_strategy_corr")
 
+        # Build regime time series
+        if regime_records:
+            reg_dates, reg_labels = zip(*regime_records, strict=True)
+            regime_history = pd.Series(
+                list(reg_labels), index=pd.DatetimeIndex(reg_dates), name="regime"
+            )
+            n_regime_changes = sum(
+                1 for k in range(1, len(reg_labels)) if reg_labels[k] != reg_labels[k - 1]
+            )
+        else:
+            regime_history = pd.Series(dtype=object, name="regime")
+            n_regime_changes = 0
+
         report = MultiStrategyBacktestReport(
             name=config.name,
             start_date=start_date,
@@ -578,6 +643,8 @@ class MultiStrategyBacktestEngine:
             capital_weight_history=cap_weight_history,
             avg_strategy_corr_history=avg_corr_history,
             n_crowding_events=n_crowding,
+            regime_history=regime_history,
+            n_regime_changes=n_regime_changes,
         )
 
         logger.info(
