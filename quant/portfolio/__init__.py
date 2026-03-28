@@ -11,6 +11,16 @@ from quant.portfolio.attribution import (
     SectorAttribution,
     SignalAttribution,
 )
+from quant.portfolio.benchmark_analytics import (
+    ActivePosition,
+    ActiveRiskResult,
+    ActiveWeightResult,
+    BenchmarkAnalyzer,
+    BenchmarkConfig,
+    BrinsonResult,
+    SectorEffect,
+    TEBudgetResult,
+)
 from quant.portfolio.constraints import PortfolioConstraints
 from quant.portfolio.dashboard import CIODashboard, StrategyLine
 from quant.portfolio.engine import ConstructionResult, PortfolioConfig, PortfolioEngine
@@ -87,9 +97,16 @@ from quant.portfolio.walk_forward_attribution import (
 
 __all__ = [
     # Alpha
+    "ActivePosition",
+    "ActiveRiskResult",
+    "ActiveWeightResult",
     "AlphaCombiner",
     "AlphaScore",
     "CombinationMethod",
+    # Benchmark analytics
+    "BenchmarkAnalyzer",
+    "BenchmarkConfig",
+    "BrinsonResult",
     # Attribution
     "AttributionReport",
     "PerformanceAttributor",
@@ -140,6 +157,7 @@ __all__ = [
     "CalendarFrequency",
     "RebalanceTrigger",
     "TriggerConfig",
+    "TEBudgetResult",
     "TriggerDecision",
     "TriggerReason",
     # Rebalancer
@@ -150,6 +168,7 @@ __all__ = [
     "ScenarioAnalyzer",
     "ScenarioConfig",
     "ScenarioResult",
+    "SectorEffect",
     "ShockResult",
     # Strategy correlation
     "CrowdingAlert",
