@@ -494,3 +494,156 @@ class TestLifecycleConfig:
         assert cfg.drawdown_critical == 0.30
         assert cfg.realloc_aggressiveness == 0.8
         assert cfg.min_allocation == 0.05
+
+    def test_half_life_defaults(self):
+        cfg = LifecycleConfig()
+        assert cfg.half_life_watch == 5
+        assert cfg.half_life_degraded == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: Half-life health classification (QUA-70)
+# ---------------------------------------------------------------------------
+
+
+class TestHalfLifeHealth:
+    def test_long_half_life_stays_healthy(self):
+        """A signal with half-life well above watch threshold is HEALTHY."""
+        mgr = LifecycleManager(LifecycleConfig(
+            drawdown_watch=0.50,  # relax so only half-life matters
+            half_life_watch=5,
+            half_life_degraded=2,
+        ))
+        mgr.update(StrategySnapshot(
+            name="slow_decay",
+            returns_series=_make_returns(mean=0.001, std=0.005),
+            current_weight=0.50,
+            signal_half_life=21,  # well above 5d threshold
+        ))
+        report = mgr.evaluate()
+        h = report.strategy_health[0]
+        assert h.signal_half_life == 21
+        assert h.status == HealthStatus.HEALTHY
+
+    def test_short_half_life_triggers_watch(self):
+        """Half-life at or below watch threshold triggers WATCH."""
+        mgr = LifecycleManager(LifecycleConfig(
+            drawdown_watch=0.50,
+            half_life_watch=5,
+            half_life_degraded=2,
+        ))
+        mgr.update(StrategySnapshot(
+            name="medium_decay",
+            returns_series=_make_returns(mean=0.001, std=0.005),
+            current_weight=0.50,
+            signal_half_life=5,  # exactly at watch threshold
+        ))
+        report = mgr.evaluate()
+        assert report.strategy_health[0].status == HealthStatus.WATCH
+        assert any("half-life" in r for r in report.strategy_health[0].reasons)
+
+    def test_very_short_half_life_triggers_degraded(self):
+        """Half-life at or below degraded threshold triggers DEGRADED."""
+        mgr = LifecycleManager(LifecycleConfig(
+            drawdown_watch=0.50,
+            half_life_watch=5,
+            half_life_degraded=2,
+        ))
+        mgr.update(StrategySnapshot(
+            name="fast_decay",
+            returns_series=_make_returns(mean=0.001, std=0.005),
+            current_weight=0.50,
+            signal_half_life=1,  # below degraded threshold
+        ))
+        report = mgr.evaluate()
+        assert report.strategy_health[0].status == HealthStatus.DEGRADED
+        assert any("half-life" in r for r in report.strategy_health[0].reasons)
+
+    def test_none_half_life_no_effect(self):
+        """When signal_half_life is None, half-life check is skipped."""
+        mgr = LifecycleManager(LifecycleConfig(
+            drawdown_watch=0.50,
+            half_life_watch=5,
+            half_life_degraded=2,
+        ))
+        mgr.update(StrategySnapshot(
+            name="no_decay_info",
+            returns_series=_make_returns(mean=0.001, std=0.005),
+            current_weight=0.50,
+            signal_half_life=None,
+        ))
+        report = mgr.evaluate()
+        assert report.strategy_health[0].status == HealthStatus.HEALTHY
+        assert not any("half-life" in r for r in report.strategy_health[0].reasons)
+
+    def test_disabled_thresholds_no_effect(self):
+        """When half_life thresholds are None, check is skipped."""
+        mgr = LifecycleManager(LifecycleConfig(
+            drawdown_watch=0.50,
+            half_life_watch=None,
+            half_life_degraded=None,
+        ))
+        mgr.update(StrategySnapshot(
+            name="fast_but_ok",
+            returns_series=_make_returns(mean=0.001, std=0.005),
+            current_weight=0.50,
+            signal_half_life=1,  # very short, but checks disabled
+        ))
+        report = mgr.evaluate()
+        assert report.strategy_health[0].status == HealthStatus.HEALTHY
+
+    def test_half_life_worst_condition_wins(self):
+        """Half-life WATCH combined with IC DEGRADED → DEGRADED wins."""
+        mgr = LifecycleManager(LifecycleConfig(
+            drawdown_watch=0.50,
+            half_life_watch=5,
+            half_life_degraded=2,
+            ic_degraded=0.01,
+        ))
+        mgr.update(StrategySnapshot(
+            name="dual_issue",
+            returns_series=_make_returns(mean=0.001, std=0.005),
+            current_weight=0.50,
+            signal_ic=0.005,  # IC ≤ 0.01 → DEGRADED
+            signal_half_life=4,  # half-life ≤ 5 → WATCH
+        ))
+        report = mgr.evaluate()
+        # DEGRADED from IC wins over WATCH from half-life
+        assert report.strategy_health[0].status == HealthStatus.DEGRADED
+
+    def test_half_life_propagated_to_health(self):
+        """signal_half_life should appear on the StrategyHealth output."""
+        mgr = LifecycleManager(LifecycleConfig(drawdown_watch=0.50))
+        mgr.update(StrategySnapshot(
+            name="strat",
+            returns_series=_make_returns(mean=0.001, std=0.005),
+            current_weight=0.50,
+            signal_half_life=10,
+        ))
+        report = mgr.evaluate()
+        assert report.strategy_health[0].signal_half_life == 10
+
+    def test_half_life_reallocation_impact(self):
+        """Strategy with short half-life should receive lower allocation."""
+        mgr = LifecycleManager(LifecycleConfig(
+            drawdown_watch=0.50,
+            half_life_watch=5,
+            half_life_degraded=2,
+            realloc_aggressiveness=0.5,
+        ))
+        mgr.update(StrategySnapshot(
+            name="stable",
+            returns_series=_make_returns(mean=0.001, std=0.005),
+            current_weight=0.50,
+            signal_half_life=21,
+        ))
+        mgr.update(StrategySnapshot(
+            name="decaying",
+            returns_series=_make_returns(mean=0.001, std=0.005, seed=99),
+            current_weight=0.50,
+            signal_half_life=3,  # triggers WATCH
+        ))
+        report = mgr.evaluate()
+        recs = {r.strategy: r for r in report.recommendations}
+        # Stable should get more, decaying should get less
+        assert recs["stable"].recommended_weight >= recs["decaying"].recommended_weight

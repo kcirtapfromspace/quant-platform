@@ -88,6 +88,11 @@ class LifecycleConfig:
         ic_critical:        IC below this triggers CRITICAL.
         min_sharpe_watch:   Rolling Sharpe below this triggers WATCH.
         min_sharpe_degraded: Rolling Sharpe below this triggers DEGRADED.
+        half_life_watch:    Signal half-life (days) below which strategy
+                            enters WATCH.  A short half-life means alpha
+                            decays quickly — risky if rebalance is slow.
+        half_life_degraded: Signal half-life (days) below which strategy
+                            enters DEGRADED.
         eval_window:        Rolling window (trading days) for Sharpe/vol.
         max_weight_move:    Maximum capital weight change per evaluation
                             (prevents extreme rebalancing).
@@ -104,6 +109,8 @@ class LifecycleConfig:
     ic_critical: float = -0.01
     min_sharpe_watch: float = 0.5
     min_sharpe_degraded: float = 0.0
+    half_life_watch: int | None = 5
+    half_life_degraded: int | None = 2
     eval_window: int = 63
     max_weight_move: float = 0.10
     min_allocation: float = 0.02
@@ -127,6 +134,10 @@ class StrategySnapshot:
                           None if unavailable.
         ic_history:       Time series of rolling IC values.
                           None if unavailable.
+        signal_half_life: Signal IC half-life in trading days — how many
+                          days until IC decays to half its peak value.
+                          None if unavailable or signal never decays.
+                          Sourced from :class:`~quant.signals.decay.DecayResult`.
         metadata:         Arbitrary strategy metadata for reporting.
     """
 
@@ -135,6 +146,7 @@ class StrategySnapshot:
     current_weight: float = 0.0
     signal_ic: float | None = None
     ic_history: pd.Series | None = None
+    signal_half_life: int | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
 
@@ -158,6 +170,8 @@ class StrategyHealth:
         signal_ic:        Most recent signal IC (None if unavailable).
         ic_trend:         Slope of IC over recent history
                           (positive = improving, negative = decaying).
+        signal_half_life: Signal IC half-life in trading days (None if
+                          unavailable or signal never decays).
         reasons:          Human-readable reasons for the status.
     """
 
@@ -170,6 +184,7 @@ class StrategyHealth:
     current_drawdown: float
     signal_ic: float | None
     ic_trend: float | None
+    signal_half_life: int | None = None
     reasons: list[str] = field(default_factory=list)
 
 
@@ -390,6 +405,19 @@ class LifecycleManager:
             status = max(status, HealthStatus.WATCH, key=_status_severity)
             reasons.append(f"Sharpe {rolling_sharpe:.2f} <= {cfg.min_sharpe_watch:.2f}")
 
+        # Half-life checks
+        if snap.signal_half_life is not None:
+            if cfg.half_life_degraded is not None and snap.signal_half_life <= cfg.half_life_degraded:
+                status = max(status, HealthStatus.DEGRADED, key=_status_severity)
+                reasons.append(
+                    f"half-life {snap.signal_half_life}d <= {cfg.half_life_degraded}d"
+                )
+            elif cfg.half_life_watch is not None and snap.signal_half_life <= cfg.half_life_watch:
+                status = max(status, HealthStatus.WATCH, key=_status_severity)
+                reasons.append(
+                    f"half-life {snap.signal_half_life}d <= {cfg.half_life_watch}d"
+                )
+
         if not reasons:
             reasons.append("all metrics within thresholds")
 
@@ -403,6 +431,7 @@ class LifecycleManager:
             current_drawdown=current_dd,
             signal_ic=snap.signal_ic,
             ic_trend=ic_trend,
+            signal_half_life=snap.signal_half_life,
             reasons=reasons,
         )
 
