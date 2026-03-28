@@ -31,6 +31,9 @@ Thumbs.db
 *.duckdb
 *.duckdb.wal
 
+# Backtest results (generated artifacts)
+backtest-results/
+
 # Demo frontend
 demo/node_modules/
 demo/dist/
