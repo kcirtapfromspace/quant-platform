@@ -230,6 +230,11 @@ class MultiStrategyBacktestReport:
     n_circuit_breaker_trips: int = 0
     circuit_breaker_days: int = 0
 
+    # Per-sleeve daily returns (DatetimeIndex × sleeve names)
+    sleeve_returns: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(), repr=False
+    )
+
     # Cost decomposition (populated when cost_model is used)
     total_spread_costs: float = 0.0
     total_impact_costs: float = 0.0
@@ -369,18 +374,33 @@ class MultiStrategyBacktestEngine:
         agg_spread = 0.0
         agg_impact = 0.0
         agg_commission = 0.0
+        # Per-sleeve attribution tracking
+        sleeve_names = [sc.name for sc in config.sleeves]
+        sleeve_weights_state: dict[str, dict[str, float]] = {
+            n: {} for n in sleeve_names
+        }
+        sleeve_daily_rets: list[dict[str, float]] = []
 
         for i in range(n_days):
             dt = dates[i]
             day_return = 0.0
 
             # ── 1. Earn today's return on existing weights ──────────────
+            day_sleeve_rets: dict[str, float] = {}
             if weights and i > 0:
                 day_return = sum(
                     weights.get(sym, 0.0) * float(filled.iat[i, j])
                     for j, sym in enumerate(symbols)
                 )
                 portfolio_value *= 1 + day_return
+
+                # Per-sleeve return attribution
+                for sname, sw in sleeve_weights_state.items():
+                    sr = sum(
+                        sw.get(sym, 0.0) * float(filled.iat[i, j])
+                        for j, sym in enumerate(symbols)
+                    )
+                    day_sleeve_rets[sname] = sr
 
                 # Drift weights
                 if abs(1 + day_return) > 1e-12:
@@ -394,6 +414,20 @@ class MultiStrategyBacktestEngine:
                         if abs(new_w) > 1e-12:
                             drifted[sym] = new_w
                     weights = drifted
+
+                    # Drift per-sleeve weights
+                    for sname in sleeve_names:
+                        sw = sleeve_weights_state[sname]
+                        new_sw: dict[str, float] = {}
+                        for sym, w in sw.items():
+                            j = symbols.index(sym) if sym in symbols else -1
+                            if j < 0:
+                                continue
+                            r_sym = float(filled.iat[i, j])
+                            new_w = w * (1 + r_sym) / (1 + day_return)
+                            if abs(new_w) > 1e-12:
+                                new_sw[sym] = new_w
+                        sleeve_weights_state[sname] = new_sw
 
             # ── 1b. Circuit breaker check ────────────────────────────────
             cb = config.circuit_breaker
@@ -615,6 +649,18 @@ class MultiStrategyBacktestEngine:
                     weights = combined
                     days_since_rebalance = 0
 
+                    # Update per-sleeve weights for attribution
+                    for snap in sleeve_snapshots:
+                        sleeve_weights_state[snap.name] = dict(
+                            snap.target_weights
+                        )
+                    # Clear weights for sleeves not in snapshots
+                    active_names = {s.name for s in sleeve_snapshots}
+                    for sname in sleeve_names:
+                        if sname not in active_names:
+                            sleeve_weights_state[sname] = {}
+
+            sleeve_daily_rets.append(day_sleeve_rets)
             equity_values.append(portfolio_value)
             daily_rets.append(day_return)
             weights_records.append(dict(weights))
@@ -678,6 +724,11 @@ class MultiStrategyBacktestEngine:
             regime_history = pd.Series(dtype=object, name="regime")
             n_regime_changes = 0
 
+        # Build per-sleeve returns for attribution
+        sleeve_returns_history = pd.DataFrame(
+            sleeve_daily_rets, index=dates
+        ).fillna(0.0)
+
         report = MultiStrategyBacktestReport(
             name=config.name,
             start_date=start_date,
@@ -699,6 +750,7 @@ class MultiStrategyBacktestEngine:
             weights_history=weights_history,
             rebalances=rebalances,
             capital_weight_history=cap_weight_history,
+            sleeve_returns=sleeve_returns_history,
             avg_strategy_corr_history=avg_corr_history,
             n_crowding_events=n_crowding,
             regime_history=regime_history,

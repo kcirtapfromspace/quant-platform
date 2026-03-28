@@ -686,3 +686,61 @@ class TestCostDecomposition:
         report = engine.run(_make_returns(), config)
         summary = report.summary()
         assert "Spread costs" not in summary
+
+
+# ── Per-sleeve P&L attribution tests (QUA-77) ────────────────────────────
+
+
+class TestSleeveAttribution:
+    def test_sleeve_returns_populated(self):
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), _make_config())
+        assert not report.sleeve_returns.empty
+        assert len(report.sleeve_returns) == 300
+
+    def test_sleeve_returns_columns_match_sleeves(self):
+        engine = MultiStrategyBacktestEngine()
+        config = _make_config(n_sleeves=2)
+        report = engine.run(_make_returns(), config)
+        sleeve_names = {sc.name for sc in config.sleeves}
+        assert set(report.sleeve_returns.columns) == sleeve_names
+
+    def test_sleeve_returns_sum_to_portfolio(self):
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), _make_config())
+        # Sum of per-sleeve returns should approximate total portfolio return
+        sleeve_sum = report.sleeve_returns.sum(axis=1)
+        # Skip early days before first rebalance
+        start = 61  # after min_history
+        np.testing.assert_allclose(
+            sleeve_sum.iloc[start:].values,
+            report.returns_series.iloc[start:].values,
+            atol=1e-10,
+        )
+
+    def test_three_sleeves_attribution(self):
+        engine = MultiStrategyBacktestEngine()
+        config = _make_config(n_sleeves=3)
+        report = engine.run(_make_returns(), config)
+        assert report.sleeve_returns.shape[1] == 3
+
+    def test_sleeve_returns_zero_before_first_rebalance(self):
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), _make_config())
+        # Before first rebalance all sleeve returns should be zero
+        early = report.sleeve_returns.iloc[:5]
+        assert (early == 0.0).all().all()
+
+    def test_sleeve_returns_with_lifecycle(self):
+        engine = MultiStrategyBacktestEngine()
+        config = _make_config(lifecycle=True, apply_realloc=True)
+        report = engine.run(_make_returns(), config)
+        assert not report.sleeve_returns.empty
+        # Still sums correctly after capital reallocation
+        sleeve_sum = report.sleeve_returns.sum(axis=1)
+        start = 61
+        np.testing.assert_allclose(
+            sleeve_sum.iloc[start:].values,
+            report.returns_series.iloc[start:].values,
+            atol=1e-10,
+        )
