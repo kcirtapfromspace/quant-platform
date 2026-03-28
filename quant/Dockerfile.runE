@@ -1,16 +1,44 @@
 # ── quant-py: Python run-time for the runE paper-trading daemon ───────────────
 # Target: linux/arm64 (Turing Pi cluster, Raspberry Pi CM4 / Jetson Orin Nano)
-# Usage: deploy as sidecar in the quant-server pod (shares market-data PVC)
-FROM python:3.11-slim AS base
+# Stage 1: Build quant_rs PyO3 wheel using Rust + maturin
+# Stage 2: Python runtime with quant package + compiled wheel
+FROM --platform=linux/arm64 rust:1.93-slim AS rust-builder
 
-# System dependencies for DuckDB, pandas, and alpaca-py
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc g++ libffi-dev libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+        python3-dev python3-pip patchelf gcc && \
+    pip3 install --no-cache-dir "maturin>=1.5,<2.0" && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install Python packages in a separate layer for cache reuse
 WORKDIR /build
-COPY pyproject.toml uv.lock ./
+# Copy the quant-rs workspace (PyO3 extension root + all member crates)
+COPY quant-rs/Cargo.toml quant-rs/Cargo.lock quant-rs/pyproject.toml quant-rs/rust-toolchain.toml ./
+COPY quant-rs/src ./src
+COPY quant-rs/quant-features ./quant-features
+COPY quant-rs/quant-risk ./quant-risk
+COPY quant-rs/quant-signals ./quant-signals
+COPY quant-rs/quant-backtest ./quant-backtest
+COPY quant-rs/quant-oms ./quant-oms
+COPY quant-rs/quant-portfolio ./quant-portfolio
+COPY quant-rs/quant-data ./quant-data
+COPY quant-rs/quant-cli ./quant-cli
+
+RUN maturin build --release --strip
+
+# ── Python runtime ────────────────────────────────────────────────────────────
+FROM --platform=linux/arm64 python:3.11-slim AS base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ libffi-dev libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Install the compiled quant_rs wheel first
+COPY --from=rust-builder /build/target/wheels/*.whl /tmp/
+RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
+
+# Install the Python quant package with execution + monitoring extras
+COPY pyproject.toml ./
 COPY quant/ ./quant/
 COPY data/ ./data/
 
@@ -18,10 +46,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir ".[execution,monitoring]"
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
-FROM python:3.11-slim AS runtime
+FROM --platform=linux/arm64 python:3.11-slim AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends libffi8 libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libffi8 libssl3 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from build stage
 COPY --from=base /usr/local/lib/python3.11 /usr/local/lib/python3.11
@@ -33,14 +61,10 @@ WORKDIR /app
 # Non-root user matching quant-rs convention (UID/GID 999)
 RUN groupadd -g 999 quant && useradd -u 999 -g 999 -s /sbin/nologin quant && \
     mkdir -p /app/data && chown -R quant:quant /app/data
-USER quant
+USER 999
 
-# Health probe: --status exits 0 if activated, 1 if not-yet-activated
-# Container runtime may use this for liveness checks
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
     CMD python -c "import os; exit(0 if os.path.exists('/app/data/run_e_state.json') else 1)"
 
-# Default: run the daemon (scheduler mode, metrics on port 8001)
-# --run-hour 16 --run-minute 5: fire daily at 4:05 PM ET (post-close rebalance)
 ENTRYPOINT ["python", "-m", "quant.scripts.activate_run_e"]
 CMD ["--run-hour", "16", "--run-minute", "5", "--metrics-port", "8001"]
