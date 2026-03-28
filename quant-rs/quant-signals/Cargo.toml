@@ -7,6 +7,9 @@ description = "Pure-Rust signal framework: momentum, mean-reversion, trend-follo
 [lib]
 crate-type = ["rlib"]
 
+[dependencies]
+quant-bayes = { path = "../quant-bayes" }
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 

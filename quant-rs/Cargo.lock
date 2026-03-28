@@ -2077,6 +2077,7 @@ name = "quant-signals"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "quant-bayes",
 ]
 
 [[package]]

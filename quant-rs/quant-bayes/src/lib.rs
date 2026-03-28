@@ -1,6 +1,11 @@
 //! Bayesian inference primitives for quant-rs.
 //!
-//! Phase 1 scaffold — trait definitions for conjugate models and posterior samplers.
+//! - Phase 1: `BayesianModel` / `PosteriorSampler` traits (conjugate scaffolding)
+//! - Phase 2: `HmmRegimeModel` — 2-state HMM with Gaussian emissions
+
+pub mod hmm;
+
+pub use hmm::{HmmRegimeModel, RegimeState};
 
 use rand::Rng;
 

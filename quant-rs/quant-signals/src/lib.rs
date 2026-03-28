@@ -2,6 +2,10 @@
 //!
 //! Phase 4: full port of MomentumSignal, MeanReversionSignal, TrendFollowingSignal.
 //! Phase 1 trait/struct definitions are preserved for API compatibility.
+//! Phase 5: HMM-based regime detection via `RegimeDetector` / `RegimeWeightAdapter`.
+
+pub use quant_bayes::RegimeState;
+use quant_bayes::HmmRegimeModel;
 
 // ── Phase-1 types (preserved) ─────────────────────────────────────────────
 
@@ -392,5 +396,160 @@ mod tests {
         assert!((-1.0..=1.0).contains(&s));
         assert!((0.0..=1.0).contains(&c));
         assert!((-1.0..=1.0).contains(&t));
+    }
+}
+
+// ── HMM-based regime detection ────────────────────────────────────────────────
+
+/// Regime detector backed by a 2-state HMM with Gaussian emissions.
+///
+/// Replaces the legacy threshold rule (`vol > μ + 1.5σ`) with a smooth
+/// probabilistic regime estimate updated online at O(1) per bar.
+///
+/// # Usage
+/// ```
+/// use quant_signals::{RegimeDetector, RegimeState};
+///
+/// let rets: Vec<f64> = (0..100).map(|i| if i % 2 == 0 { 0.01 } else { -0.01 }).collect();
+/// let mut detector = RegimeDetector::new();
+/// detector.fit(&rets);
+/// detector.update(0.02);
+/// let [low_prob, high_prob] = detector.regime_probs();
+/// assert!((low_prob + high_prob - 1.0).abs() < 1e-10);
+/// ```
+pub struct RegimeDetector {
+    model: HmmRegimeModel,
+}
+
+impl Default for RegimeDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RegimeDetector {
+    /// Create a new detector with uninformative priors.
+    pub fn new() -> Self {
+        Self {
+            model: HmmRegimeModel::new(),
+        }
+    }
+
+    /// Train the HMM on a historical return series via Baum-Welch EM.
+    pub fn fit(&mut self, returns: &[f64]) {
+        self.model.fit(returns);
+    }
+
+    /// Online forward-pass update with a single new observation — O(1).
+    pub fn update(&mut self, ret: f64) {
+        self.model.update(ret);
+    }
+
+    /// Current smooth regime probabilities `[P(LowVol), P(HighVol)]`.
+    pub fn regime_probs(&self) -> [f64; 2] {
+        self.model.regime_probs()
+    }
+
+    /// Most likely current regime (argmax of filtered state probabilities).
+    pub fn most_likely_regime(&self) -> RegimeState {
+        self.model.most_likely_regime()
+    }
+}
+
+/// Converts smooth HMM regime probabilities into a position-size weight.
+///
+/// Interpolates linearly between `low_vol_weight` (calm regime) and
+/// `high_vol_weight` (turbulent regime), replacing the old binary on/off flag.
+///
+/// Default: full weight (1.0) in `LowVol`, half weight (0.5) in `HighVol`.
+pub struct RegimeWeightAdapter {
+    /// Multiplier applied when fully in the `LowVol` regime.
+    pub low_vol_weight: f64,
+    /// Multiplier applied when fully in the `HighVol` regime.
+    pub high_vol_weight: f64,
+}
+
+impl Default for RegimeWeightAdapter {
+    fn default() -> Self {
+        Self::new(1.0, 0.5)
+    }
+}
+
+impl RegimeWeightAdapter {
+    /// Create with explicit per-regime weights.
+    pub fn new(low_vol_weight: f64, high_vol_weight: f64) -> Self {
+        Self {
+            low_vol_weight,
+            high_vol_weight,
+        }
+    }
+
+    /// Smooth position weight: `low_vol_weight × P(LowVol) + high_vol_weight × P(HighVol)`.
+    #[inline]
+    pub fn weight(&self, regime_probs: [f64; 2]) -> f64 {
+        self.low_vol_weight * regime_probs[0] + self.high_vol_weight * regime_probs[1]
+    }
+}
+
+// ── Regime tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod regime_tests {
+    use super::*;
+
+    fn two_regime_returns() -> Vec<f64> {
+        let mut v: Vec<f64> = (0..50)
+            .map(|i| if i % 2 == 0 { 0.01_f64 } else { -0.01_f64 })
+            .collect();
+        v.extend((0..50).map(|i| if i % 2 == 0 { 0.05_f64 } else { -0.05_f64 }));
+        v
+    }
+
+    #[test]
+    fn test_regime_detector_fit_and_update() {
+        let rets = two_regime_returns();
+        let mut det = RegimeDetector::new();
+        det.fit(&rets);
+
+        let probs = det.regime_probs();
+        assert!((probs[0] + probs[1] - 1.0).abs() < 1e-10);
+
+        det.update(0.02);
+        let probs2 = det.regime_probs();
+        assert!((probs2[0] + probs2[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_regime_detector_detects_high_vol_end() {
+        let rets = two_regime_returns();
+        let mut det = RegimeDetector::new();
+        det.fit(&rets);
+        assert_eq!(det.most_likely_regime(), RegimeState::HighVol);
+    }
+
+    #[test]
+    fn test_regime_weight_adapter_bounds() {
+        let adapter = RegimeWeightAdapter::default();
+        // Fully LowVol
+        assert!((adapter.weight([1.0, 0.0]) - 1.0).abs() < 1e-12);
+        // Fully HighVol
+        assert!((adapter.weight([0.0, 1.0]) - 0.5).abs() < 1e-12);
+        // 50/50 mix
+        let w = adapter.weight([0.5, 0.5]);
+        assert!((w - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_regime_weight_adapter_interpolates() {
+        let adapter = RegimeWeightAdapter::new(1.0, 0.0);
+        let w = adapter.weight([0.3, 0.7]);
+        assert!((w - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_regime_state_reexport() {
+        // Ensure RegimeState is accessible from quant_signals.
+        let _ = RegimeState::LowVol;
+        let _ = RegimeState::HighVol;
     }
 }
