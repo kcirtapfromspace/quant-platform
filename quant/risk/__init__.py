@@ -16,6 +16,13 @@ from quant.risk.limit_checker import (
 )
 from quant.risk.limits import ExposureLimits
 from quant.risk.reporting import RiskReport, RiskReporter, StressScenario
+from quant.risk.risk_decomposition import (
+    DecompositionConfig,
+    FactorRiskContrib,
+    PositionRisk,
+    RiskDecomposer,
+    RiskDecompositionResult,
+)
 from quant.risk.sizing import PositionSizer, SizingMethod
 from quant.risk.strategy_monitor import (
     HealthLevel,
@@ -29,17 +36,22 @@ __all__ = [
     "CorrelationMonitor",
     "CorrelationRiskCheck",
     "CorrelationState",
+    "DecompositionConfig",
     "DrawdownCircuitBreaker",
     "BreachSeverity",
     "ExposureLimits",
+    "FactorRiskContrib",
     "HealthLevel",
     "LimitBreach",
     "LimitCheckReport",
     "LimitConfig",
     "MonitorConfig",
+    "PositionRisk",
     "PositionSizer",
     "RiskCheckResult",
     "RiskConfig",
+    "RiskDecomposer",
+    "RiskDecompositionResult",
     "RiskEngine",
     "RiskLimitChecker",
     "RiskReport",
