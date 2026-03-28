@@ -141,7 +141,9 @@ def make_feature_provider(store: MarketDataStore) -> "FeatureProvider":
     engine = FeatureEngine(store, DEFAULT_REGISTRY, cache=InMemoryFeatureCache())
 
     def feature_provider(symbol: str, signal: BaseSignal) -> dict[str, pd.Series]:
-        end = date.today()
+        # Use latest available date in DB to handle data lag (live feed may trail today)
+        db_end = store.latest_date(symbol) or date.today()
+        end = db_end
         start = end - timedelta(days=FEATURE_LOOKBACK_CAL)
         required = list(signal.required_features)
 
@@ -164,7 +166,10 @@ def make_returns_provider(store: MarketDataStore) -> "ReturnsProvider":
     """Build a returns DataFrame provider for covariance estimation."""
 
     def returns_provider(symbols: list[str], lookback_days: int) -> pd.DataFrame:
-        end = date.today()
+        # Find latest date in DB across the universe (handles data lag)
+        latest_dates = [store.latest_date(s) for s in symbols]
+        valid_dates = [d for d in latest_dates if d is not None]
+        end = max(valid_dates) if valid_dates else date.today()
         start = end - timedelta(days=max(lookback_days * 2, 400))
         try:
             ohlcv = store.query_multi(symbols, start=start, end=end)
@@ -176,11 +181,16 @@ def make_returns_provider(store: MarketDataStore) -> "ReturnsProvider":
                 .pivot(index="date", columns="symbol", values="adj_close")
                 .sort_index()
             )
+            # Forward-fill prices to handle sparse data, then drop columns
+            # that have no data at all (never appeared in DB for this window)
+            price_wide = price_wide.ffill().dropna(axis=1, how="all")
             returns = price_wide.pct_change().dropna(how="all")
             # Keep only the last lookback_days rows
             if len(returns) > lookback_days:
                 returns = returns.iloc[-lookback_days:]
-            return returns.reindex(columns=symbols)
+            # Only include symbols with actual data (don't re-add missing symbols as NaN)
+            available = [s for s in symbols if s in returns.columns]
+            return returns[available]
         except Exception:
             logger.warning("returns_provider: failed — returning empty DataFrame")
             return pd.DataFrame(columns=symbols)
