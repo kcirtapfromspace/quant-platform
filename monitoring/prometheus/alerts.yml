@@ -110,3 +110,101 @@ groups:
           description: >
             Current drawdown is {{ $value | humanizePercentage }}.
             Circuit breaker trips at the configured threshold.
+
+  # ── Paper trading — CRO drawdown thresholds (QUA-54) ─────────────────────
+  - name: paper_trading
+    interval: 30s
+    rules:
+      - alert: PaperDrawdownYellow
+        expr: quant_paper_drawdown_current >= 0.10
+        for: 2m
+        labels:
+          severity: warning
+          team: risk
+          env: paper
+        annotations:
+          summary: "Paper trading drawdown reached CRO yellow threshold (10%)"
+          description: >
+            Paper portfolio drawdown is {{ $value | humanizePercentage }}.
+            CRO yellow threshold (10%) exceeded. Review positions and exposure.
+
+      - alert: PaperDrawdownOrange
+        expr: quant_paper_drawdown_current >= 0.15
+        for: 2m
+        labels:
+          severity: warning
+          team: risk
+          env: paper
+        annotations:
+          summary: "Paper trading drawdown reached CRO orange threshold (15%)"
+          description: >
+            Paper portfolio drawdown is {{ $value | humanizePercentage }}.
+            CRO orange threshold (15%) exceeded. Consider reducing risk.
+
+      - alert: PaperDrawdownRed
+        expr: quant_paper_drawdown_current >= 0.20
+        for: 0m
+        labels:
+          severity: critical
+          team: risk
+          env: paper
+        annotations:
+          summary: "Paper trading drawdown reached CRO red threshold (20%) — immediate review required"
+          description: >
+            Paper portfolio drawdown is {{ $value | humanizePercentage }}.
+            CRO red threshold (20%) breached. Trading should halt and positions reviewed immediately.
+
+      - alert: PaperCircuitBreakerDrawdown
+        expr: quant_paper_drawdown_current >= 0.08
+        for: 1m
+        labels:
+          severity: critical
+          team: risk
+          env: paper
+        annotations:
+          summary: "Paper trading drawdown circuit breaker threshold reached (8%)"
+          description: >
+            Paper portfolio drawdown is {{ $value | humanizePercentage }}.
+            The circuit breaker threshold (8%) has been reached — new order submissions
+            should be blocked automatically. Investigate portfolio losses.
+
+      - alert: PaperDailyPnLHalt
+        expr: quant_paper_daily_pnl_pct <= -0.03
+        for: 1m
+        labels:
+          severity: critical
+          team: risk
+          env: paper
+        annotations:
+          summary: "Paper trading daily P&L circuit breaker triggered (-3% of notional)"
+          description: >
+            Daily P&L is {{ $value | humanizePercentage }} of notional.
+            The -3% daily loss circuit breaker has been triggered.
+            All new order submissions should be blocked for the remainder of the session.
+
+      - alert: PaperAdapterDisconnected
+        expr: quant_paper_adapter_connected == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: execution
+          env: paper
+        annotations:
+          summary: "Alpaca paper trading adapter disconnected"
+          description: >
+            The Alpaca paper trading adapter has been disconnected for over 2 minutes.
+            No orders can be submitted or filled. Check adapter logs and Alpaca service status.
+
+      - alert: PaperAdapterErrorRateHigh
+        expr: rate(quant_paper_adapter_errors_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          team: execution
+          env: paper
+        annotations:
+          summary: "Elevated Alpaca paper adapter error rate"
+          description: >
+            Adapter error rate is {{ $value | humanize }} errors/sec over the last 5 minutes.
+            Error types: {{ range .Labels }}{{ .Name }}={{ .Value }} {{ end }}.
+            Check broker connectivity and order routing.
