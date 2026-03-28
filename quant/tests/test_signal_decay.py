@@ -1,342 +1,267 @@
-"""Tests for signal decay analysis (QUA-49)."""
+"""Tests for signal decay analysis (QUA-90)."""
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from quant.signals.decay import (
+from quant.research.signal_decay import (
     DecayConfig,
     DecayResult,
-    HorizonIC,
+    LagMetric,
     SignalDecayAnalyzer,
-    _spearman_r,
 )
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+N_DATES = 200
+N_SYMBOLS = 30
+SYMBOLS = [f"S{i:03d}" for i in range(N_SYMBOLS)]
 
 
-def _make_data(
-    n_days: int = 200,
-    n_assets: int = 10,
+def _make_predictive_signal(
+    decay_rate: float = 0.85,
+    noise: float = 0.5,
     seed: int = 42,
-    predictive: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Create synthetic signal scores and asset returns.
-
-    If predictive=True, signal scores have genuine predictive power over
-    short-horizon returns (rank-correlated), so IC should be positive at
-    short horizons.
-    """
+    """Create a signal that predicts 1-day returns with exponential decay."""
     rng = np.random.default_rng(seed)
-    dates = pd.bdate_range("2023-01-01", periods=n_days)
-    symbols = [f"S{i:02d}" for i in range(n_assets)]
+    dates = pd.bdate_range("2023-01-01", periods=N_DATES + 30)
 
-    # Random signal scores in [-1, 1]
-    scores = pd.DataFrame(
-        rng.uniform(-1, 1, (n_days, n_assets)),
-        index=dates,
-        columns=symbols,
+    signal = pd.DataFrame(
+        rng.normal(0, 1, (len(dates), N_SYMBOLS)),
+        index=dates, columns=SYMBOLS,
     )
 
-    if predictive:
-        # Next-day return = today's signal + noise → positive IC at horizon 1
-        noise = rng.normal(0, 0.005, (n_days, n_assets))
-        raw = scores.shift(1).fillna(0).values * 0.02 + noise
-        returns = pd.DataFrame(raw, index=dates, columns=symbols)
-    else:
-        # Pure noise → IC ≈ 0
-        returns = pd.DataFrame(
-            rng.normal(0, 0.02, (n_days, n_assets)),
-            index=dates,
-            columns=symbols,
-        )
+    returns = pd.DataFrame(0.0, index=dates, columns=SYMBOLS)
+    for lag in range(1, 11):
+        weight = decay_rate ** (lag - 1)
+        returns += weight * signal.shift(lag) * 0.01
 
-    return scores, returns
+    returns += rng.normal(0, noise * 0.01, returns.shape)
+    returns = returns.iloc[30:]
+    signal = signal.iloc[30:]
+
+    return signal, returns
 
 
-# ── Tests: Basic analysis ─────────────────────────────────────────────────
+def _make_random_signal(seed: int = 99) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Create a purely random signal with no predictive power."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2023-01-01", periods=N_DATES)
+    signal = pd.DataFrame(
+        rng.normal(0, 1, (N_DATES, N_SYMBOLS)),
+        index=dates, columns=SYMBOLS,
+    )
+    returns = pd.DataFrame(
+        rng.normal(0.0005, 0.02, (N_DATES, N_SYMBOLS)),
+        index=dates, columns=SYMBOLS,
+    )
+    return signal, returns
 
 
-class TestBasicAnalysis:
-    def test_returns_decay_result(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns)
+# ---------------------------------------------------------------------------
+# Basic functionality
+# ---------------------------------------------------------------------------
+
+
+class TestBasic:
+    def test_returns_result(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
         assert isinstance(result, DecayResult)
 
-    def test_signal_name(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns, signal_name="momentum")
-        assert result.signal_name == "momentum"
+    def test_lag_metrics_populated(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer(DecayConfig(max_lag=10)).analyze(signal, returns)
+        assert len(result.lag_metrics) == 10
 
-    def test_default_signal_name(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns)
-        assert result.signal_name == "signal"
+    def test_lag_metric_types(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        for lm in result.lag_metrics:
+            assert isinstance(lm, LagMetric)
 
-    def test_horizon_ics_populated(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns)
-        assert len(result.horizon_ics) > 0
+    def test_n_symbols_tracked(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        assert result.n_symbols == N_SYMBOLS
 
-    def test_horizons_sorted(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns)
-        horizons = [h.horizon for h in result.horizon_ics]
-        assert horizons == sorted(horizons)
+    def test_cumulative_ic_length(self):
+        signal, returns = _make_predictive_signal()
+        cfg = DecayConfig(max_lag=10)
+        result = SignalDecayAnalyzer(cfg).analyze(signal, returns)
+        assert len(result.cumulative_ic) == 10
 
 
-# ── Tests: IC computation ─────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Predictive signal
+# ---------------------------------------------------------------------------
 
 
-class TestICComputation:
-    def test_predictive_signal_positive_ic(self):
-        """A signal with genuine predictive power should have positive IC."""
-        scores, returns = _make_data(predictive=True)
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[1]))
-        result = analyzer.analyze(scores, returns)
-        assert result.horizon_ics[0].mean_ic > 0
+class TestPredictiveSignal:
+    def test_peak_ic_positive(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        assert result.peak_ic > 0.01
 
-    def test_noise_signal_near_zero_ic(self):
-        """A noise signal should have IC near zero."""
-        scores, returns = _make_data(predictive=False, n_days=500, seed=99)
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[1]))
-        result = analyzer.analyze(scores, returns)
-        assert abs(result.horizon_ics[0].mean_ic) < 0.1
+    def test_peak_lag_early(self):
+        signal, returns = _make_predictive_signal(decay_rate=0.85)
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        assert result.peak_lag <= 5
 
-    def test_ic_series_stored(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[1, 5]))
-        result = analyzer.analyze(scores, returns)
-        assert 1 in result.ic_series
-        assert 5 in result.ic_series
-        assert isinstance(result.ic_series[1], pd.Series)
+    def test_ic_decays_from_peak(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer(DecayConfig(max_lag=15)).analyze(signal, returns)
+        last_ic = result.lag_metrics[-1].mean_ic
+        assert last_ic < result.peak_ic
 
-    def test_horizon_ic_fields(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[5]))
-        result = analyzer.analyze(scores, returns)
-        h = result.horizon_ics[0]
-        assert isinstance(h, HorizonIC)
-        assert h.horizon == 5
-        assert h.n_periods > 0
-        assert 0.0 <= h.hit_rate <= 1.0
-        assert h.std_ic >= 0
+    def test_half_life_exists(self):
+        signal, returns = _make_predictive_signal(decay_rate=0.70)
+        result = SignalDecayAnalyzer(DecayConfig(max_lag=20)).analyze(signal, returns)
+        assert result.half_life is not None
+        assert result.half_life > result.peak_lag
 
-    def test_ir_equals_mean_over_std(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[5]))
-        result = analyzer.analyze(scores, returns)
-        h = result.horizon_ics[0]
-        if h.std_ic > 1e-8:
-            assert abs(h.ir - h.mean_ic / h.std_ic) < 1e-6
+    def test_icir_positive_for_good_signal(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        assert result.lag_metrics[0].icir > 0
 
-    def test_t_stat_computed(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[1]))
-        result = analyzer.analyze(scores, returns)
-        h = result.horizon_ics[0]
-        if h.std_ic > 1e-8:
-            expected = h.mean_ic / (h.std_ic / np.sqrt(h.n_periods))
-            assert abs(h.t_stat - expected) < 1e-6
+    def test_hit_rate_above_half(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        peak_lm = next(lm for lm in result.lag_metrics if lm.lag == result.peak_lag)
+        assert peak_lm.hit_rate > 0.50
 
 
-# ── Tests: Half-life ──────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Random signal
+# ---------------------------------------------------------------------------
 
 
-class TestHalfLife:
-    def test_half_life_detected(self):
-        """With a strongly predictive short-horizon signal, IC should decay."""
-        scores, returns = _make_data(predictive=True, n_days=300)
-        analyzer = SignalDecayAnalyzer(
-            DecayConfig(horizons=[1, 2, 3, 5, 10, 21, 42, 63])
-        )
-        result = analyzer.analyze(scores, returns)
-        # If peak IC is at short horizon and decays, half_life should be set
-        if result.peak_ic > 0 and result.half_life is not None:
-            assert result.half_life > result.optimal_horizon
+class TestRandomSignal:
+    def test_random_low_ic(self):
+        signal, returns = _make_random_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        assert abs(result.peak_ic) < 0.10
 
-    def test_no_half_life_when_ic_never_drops(self):
-        """If IC doesn't drop below half peak, half_life should be None."""
-        scores, returns = _make_data(predictive=True)
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[1]))
-        result = analyzer.analyze(scores, returns)
-        # Only one horizon → nothing to decay → None
-        assert result.half_life is None
-
-    def test_half_life_none_for_negative_peak(self):
-        """Negative peak IC should give None half-life."""
-        # Use noise signal which may have negative peak
-        scores, returns = _make_data(predictive=False, seed=7)
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[1, 5, 10]))
-        result = analyzer.analyze(scores, returns)
-        if result.peak_ic <= 0:
-            assert result.half_life is None
+    def test_random_icir_near_zero(self):
+        signal, returns = _make_random_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        for lm in result.lag_metrics:
+            assert abs(lm.icir) < 1.0
 
 
-# ── Tests: Optimal horizon ────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Cumulative IC and optimal holding
+# ---------------------------------------------------------------------------
 
 
-class TestOptimalHorizon:
-    def test_optimal_horizon_is_peak(self):
-        scores, returns = _make_data(predictive=True)
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns)
-        # optimal_horizon should match the horizon with highest mean_ic
-        best = max(result.horizon_ics, key=lambda h: h.mean_ic)
-        assert result.optimal_horizon == best.horizon
+class TestCumulativeIC:
+    def test_cumulative_ic_starts_positive(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer(DecayConfig(max_lag=5)).analyze(signal, returns)
+        assert result.cumulative_ic[0] > 0
 
-    def test_peak_ic_matches(self):
-        scores, returns = _make_data(predictive=True)
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns)
-        best = max(result.horizon_ics, key=lambda h: h.mean_ic)
-        assert abs(result.peak_ic - best.mean_ic) < 1e-10
+    def test_optimal_holding_positive(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        assert result.optimal_holding_period >= 1
 
-
-# ── Tests: IC curve ───────────────────────────────────────────────────────
+    def test_optimal_net_ic_meaningful(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer().analyze(signal, returns)
+        assert result.optimal_net_ic > -1.0
 
 
-class TestICCurve:
-    def test_ic_curve_type(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns)
-        curve = result.ic_curve()
-        assert isinstance(curve, pd.Series)
-
-    def test_ic_curve_indexed_by_horizon(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[1, 5, 10]))
-        result = analyzer.analyze(scores, returns)
-        curve = result.ic_curve()
-        for h in result.horizon_ics:
-            assert h.horizon in curve.index
-            assert abs(curve[h.horizon] - h.mean_ic) < 1e-10
+# ---------------------------------------------------------------------------
+# IC time series
+# ---------------------------------------------------------------------------
 
 
-# ── Tests: Edge cases ─────────────────────────────────────────────────────
+class TestICSeries:
+    def test_ic_series_populated(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer(DecayConfig(max_lag=5)).analyze(signal, returns)
+        assert len(result.ic_series) > 0
+
+    def test_ic_series_are_pandas(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer(DecayConfig(max_lag=5)).analyze(signal, returns)
+        for _lag, series in result.ic_series.items():
+            assert isinstance(series, pd.Series)
+            assert len(series) > 0
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+
+class TestConfig:
+    def test_max_lag_respected(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer(DecayConfig(max_lag=5)).analyze(signal, returns)
+        assert len(result.lag_metrics) == 5
+
+    def test_higher_cost_later_optimal(self):
+        signal, returns = _make_predictive_signal()
+        low_cost = SignalDecayAnalyzer(
+            DecayConfig(turnover_cost_bps=5.0, max_lag=15),
+        ).analyze(signal, returns)
+        high_cost = SignalDecayAnalyzer(
+            DecayConfig(turnover_cost_bps=100.0, max_lag=15),
+        ).analyze(signal, returns)
+        assert high_cost.optimal_holding_period >= low_cost.optimal_holding_period
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
 
 
 class TestEdgeCases:
-    def test_empty_scores_raises(self):
-        analyzer = SignalDecayAnalyzer()
-        with pytest.raises(ValueError, match="must not be empty"):
-            analyzer.analyze(pd.DataFrame(), pd.DataFrame({"A": [1, 2]}))
+    def test_too_few_dates_raises(self):
+        dates = pd.bdate_range("2023-01-01", periods=5)
+        signal = pd.DataFrame(np.zeros((5, 20)), index=dates)
+        returns = pd.DataFrame(np.zeros((5, 20)), index=dates)
+        with pytest.raises(ValueError, match="at least.*dates"):
+            SignalDecayAnalyzer(DecayConfig(min_dates=20)).analyze(signal, returns)
 
-    def test_empty_returns_raises(self):
-        analyzer = SignalDecayAnalyzer()
-        scores = pd.DataFrame({"A": [1, 2]}, index=pd.bdate_range("2023-01-01", periods=2))
-        with pytest.raises(ValueError, match="must not be empty"):
-            analyzer.analyze(scores, pd.DataFrame())
+    def test_too_few_symbols_raises(self):
+        dates = pd.bdate_range("2023-01-01", periods=100)
+        signal = pd.DataFrame(np.zeros((100, 3)), index=dates, columns=["A", "B", "C"])
+        returns = pd.DataFrame(np.zeros((100, 3)), index=dates, columns=["A", "B", "C"])
+        with pytest.raises(ValueError, match="at least.*symbols"):
+            SignalDecayAnalyzer(DecayConfig(min_observations=10)).analyze(signal, returns)
 
-    def test_too_few_common_dates(self):
-        analyzer = SignalDecayAnalyzer(DecayConfig(min_periods=100))
-        scores, returns = _make_data(n_days=50)
-        with pytest.raises(ValueError, match="common dates"):
-            analyzer.analyze(scores, returns)
-
-    def test_too_few_common_symbols(self):
-        analyzer = SignalDecayAnalyzer(DecayConfig(min_assets=20))
-        scores, returns = _make_data(n_assets=5)
-        with pytest.raises(ValueError, match="common symbols"):
-            analyzer.analyze(scores, returns)
-
-    def test_no_overlap_in_symbols(self):
-        dates = pd.bdate_range("2023-01-01", periods=50)
-        scores = pd.DataFrame(
-            np.random.randn(50, 3), index=dates, columns=["A", "B", "C"]
-        )
-        returns = pd.DataFrame(
-            np.random.randn(50, 3), index=dates, columns=["X", "Y", "Z"]
-        )
-        with pytest.raises(ValueError, match="common symbols"):
-            SignalDecayAnalyzer().analyze(scores, returns)
-
-    def test_empty_result_on_insufficient_periods(self):
-        """If no horizon produces enough IC samples, return empty result."""
-        scores, returns = _make_data(n_days=25, n_assets=5)
-        analyzer = SignalDecayAnalyzer(
-            DecayConfig(horizons=[63], min_periods=20)
-        )
-        result = analyzer.analyze(scores, returns)
-        assert len(result.horizon_ics) == 0
-        assert result.peak_ic == 0.0
+    def test_partial_overlap_works(self):
+        rng = np.random.default_rng(42)
+        dates1 = pd.bdate_range("2023-01-01", periods=150)
+        dates2 = pd.bdate_range("2023-03-01", periods=150)
+        cols = [f"S{i}" for i in range(20)]
+        signal = pd.DataFrame(rng.normal(0, 1, (150, 20)), index=dates1, columns=cols)
+        returns = pd.DataFrame(rng.normal(0, 0.02, (150, 20)), index=dates2, columns=cols)
+        result = SignalDecayAnalyzer(
+            DecayConfig(min_dates=10, max_lag=5),
+        ).analyze(signal, returns)
+        assert isinstance(result, DecayResult)
 
 
-# ── Tests: Custom config ─────────────────────────────────────────────────
-
-
-class TestCustomConfig:
-    def test_custom_horizons(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[2, 7]))
-        result = analyzer.analyze(scores, returns)
-        horizons = {h.horizon for h in result.horizon_ics}
-        assert horizons <= {2, 7}
-
-    def test_min_assets_respected(self):
-        """Higher min_assets can filter out cross-sections."""
-        scores, returns = _make_data(n_assets=5)
-        # With min_assets=5, should work
-        analyzer = SignalDecayAnalyzer(DecayConfig(horizons=[1], min_assets=5))
-        result = analyzer.analyze(scores, returns)
-        assert len(result.horizon_ics) > 0
-
-    def test_default_horizons(self):
-        config = DecayConfig()
-        assert config.horizons == [1, 2, 3, 5, 10, 21, 42, 63]
-
-
-# ── Tests: Summary ────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
 
 
 class TestSummary:
-    def test_summary_with_data(self):
-        scores, returns = _make_data()
-        analyzer = SignalDecayAnalyzer()
-        result = analyzer.analyze(scores, returns, signal_name="test_sig")
+    def test_summary_readable(self):
+        signal, returns = _make_predictive_signal()
+        result = SignalDecayAnalyzer(DecayConfig(max_lag=5)).analyze(signal, returns)
         summary = result.summary()
-        assert "Signal Decay Analysis" in summary
-        assert "test_sig" in summary
+        assert "Signal Decay" in summary
         assert "Peak IC" in summary
-
-    def test_summary_empty(self):
-        result = DecayResult(signal_name="empty")
-        summary = result.summary()
-        assert "no data" in summary
-
-
-# ── Tests: Spearman rank correlation ──────────────────────────────────────
-
-
-class TestSpearmanR:
-    def test_perfect_positive(self):
-        a = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        assert abs(_spearman_r(a, a) - 1.0) < 1e-10
-
-    def test_perfect_negative(self):
-        a = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        b = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
-        assert abs(_spearman_r(a, b) - (-1.0)) < 1e-10
-
-    def test_uncorrelated(self):
-        rng = np.random.default_rng(42)
-        a = rng.standard_normal(1000)
-        b = rng.standard_normal(1000)
-        assert abs(_spearman_r(a, b)) < 0.1
-
-    def test_too_short(self):
-        assert np.isnan(_spearman_r(np.array([1.0]), np.array([2.0])))
-
-    def test_constant_array_no_crash(self):
-        """Constant array has no meaningful rank order; just verify no crash."""
-        a = np.array([1.0, 1.0, 1.0])
-        b = np.array([1.0, 2.0, 3.0])
-        result = _spearman_r(a, b)
-        assert np.isfinite(result)
+        assert "half-life" in summary.lower()
+        assert "Optimal holding" in summary
+        assert "ICIR" in summary
