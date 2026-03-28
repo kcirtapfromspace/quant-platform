@@ -10,10 +10,23 @@ from quant.oms.models import (
     TimeInForce,
 )
 from quant.oms.persistence import SQLiteStateStore
+from quant.oms.reconciliation import (
+    BreakType,
+    Correction,
+    CorrectionAction,
+    PositionBreak,
+    PositionReconciler,
+    PositionSnapshot,
+    ReconciliationConfig,
+    ReconciliationReport,
+)
 from quant.oms.system import OrderManagementSystem
 
 __all__ = [
+    "BreakType",
     "BrokerAdapter",
+    "Correction",
+    "CorrectionAction",
     "Fill",
     "Order",
     "OrderManagementSystem",
@@ -21,6 +34,11 @@ __all__ = [
     "OrderStatus",
     "OrderType",
     "Position",
+    "PositionBreak",
+    "PositionReconciler",
+    "PositionSnapshot",
+    "ReconciliationConfig",
+    "ReconciliationReport",
     "SQLiteStateStore",
     "TimeInForce",
 ]
