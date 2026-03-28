@@ -1,105 +1,77 @@
-# Paper trading deployment: runs signal-generation + Alpaca order execution
-# from the cluster, using Sealed Secrets for API key management.
-#
-# Prerequisite: create the SealedSecret first (see sealed-secrets/README.md):
-#   kubectl create secret generic alpaca-paper-creds \
-#     --from-literal=ALPACA_API_KEY=<key> \
-#     --from-literal=ALPACA_SECRET_KEY=<secret> \
-#     --namespace hypothesis-validation --dry-run=client -o yaml \
-#     | kubeseal --controller-namespace kube-system -o yaml \
-#     > k8s/hypothesis-validation/sealed-secrets/alpaca-paper-creds.yaml
+# Quant-rs status server: serves health/status endpoints and Prometheus metrics.
+# Exposed via Tailscale Ingress for remote access.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: paper-trading
+  name: quant-server
   namespace: hypothesis-validation
   labels:
-    app: paper-trading
+    app: quant-server
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: paper-trading
+      app: quant-server
   strategy:
-    type: Recreate  # only one instance at a time
+    type: Recreate
   template:
     metadata:
       labels:
-        app: paper-trading
+        app: quant-server
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
     spec:
-      volumes:
-        - name: market-data
-          persistentVolumeClaim:
-            claimName: market-data
+      imagePullSecrets:
+        - name: ghcr-creds
       containers:
-        - name: paper-trading
-          image: mirror.registry:5000/quant-rs:latest
+        - name: quant-server
+          image: ghcr.io/kcirtapfromspace/quant-rs:latest
           imagePullPolicy: Always
           command:
-            - python
-            - -m
-            - quant.scripts.run_strategy
-            - schedule
-            - --mode
-            - paper
-            - --time
-            - "16:05"
-            - --metrics-port
+            - /usr/local/bin/quant
+            - serve
+            - --port
             - "8000"
-          env:
-            - name: DB_PATH
-              value: /data/market.duckdb
-            - name: ALPACA_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: alpaca-paper-creds
-                  key: ALPACA_API_KEY
-            - name: ALPACA_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: alpaca-paper-creds
-                  key: ALPACA_SECRET_KEY
-            - name: ALPACA_BASE_URL
-              value: "https://paper-api.alpaca.markets"
-          volumeMounts:
-            - name: market-data
-              mountPath: /data
           ports:
-            - name: metrics
+            - name: http
               containerPort: 8000
           resources:
             requests:
-              cpu: "500m"
-              memory: "1Gi"
+              cpu: "100m"
+              memory: "256Mi"
             limits:
-              cpu: "2"
-              memory: "2Gi"
+              cpu: "500m"
+              memory: "512Mi"
           livenessProbe:
             httpGet:
-              path: /metrics
+              path: /health
               port: 8000
-            initialDelaySeconds: 30
-            periodSeconds: 60
+            initialDelaySeconds: 5
+            periodSeconds: 30
             failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 10
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: paper-trading
+  name: quant-server
   namespace: hypothesis-validation
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8000"
 spec:
   selector:
-    app: paper-trading
+    app: quant-server
   ports:
-    - name: metrics
-      port: 8000
+    - name: http
+      port: 80
       targetPort: 8000
   type: ClusterIP

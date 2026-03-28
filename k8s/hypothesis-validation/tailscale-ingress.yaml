@@ -1,0 +1,18 @@
+# Tailscale Ingress: exposes quant-server on the tailnet as quant.tail16ecc2.ts.net
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: quant-server
+  namespace: hypothesis-validation
+  annotations:
+    tailscale.com/tags: "tag:k8s"
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: quant-server
+      port:
+        number: 80
+  tls:
+    - hosts:
+        - quant

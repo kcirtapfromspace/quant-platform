@@ -14,6 +14,7 @@
 mod cmd_backtest;
 mod cmd_ingest;
 mod cmd_run;
+mod cmd_serve;
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -43,6 +44,8 @@ enum Commands {
     },
     /// Backtesting commands.
     Backtest(cmd_backtest::BacktestArgs),
+    /// HTTP status server for k8s deployments.
+    Serve(cmd_serve::ServeArgs),
 }
 
 #[derive(Subcommand)]
@@ -79,5 +82,6 @@ fn main() -> anyhow::Result<()> {
             RunAction::Once(args) => cmd_run::run_once(args),
         },
         Commands::Backtest(args) => cmd_backtest::run_backtest_cmd(args),
+        Commands::Serve(args) => cmd_serve::run_serve(args),
     }
 }
