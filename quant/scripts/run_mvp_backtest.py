@@ -654,6 +654,9 @@ def run3_sensitivity(
         name = f"run3b_ma{fast_ma}_{slow_ma}"
         logger.info("  fast_ma={}, slow_ma={}", fast_ma, slow_ma)
         trend_signal = TrendFollowingSignalFromReturns(fast_ma=fast_ma, slow_ma=slow_ma)
+        # min_history must exceed signal warmup (slow_ma + buffer) to avoid
+        # degenerate alpha vectors that hang the MVO optimizer.
+        trend_min_history = max(100, slow_ma + slow_ma // 2)
         ms_config = MultiStrategyConfig(
             sleeves=[
                 SleeveConfig(
@@ -669,7 +672,7 @@ def run3_sensitivity(
             commission_bps=10.0,
             initial_capital=1_000_000.0,
             sector_map=sector_map,
-            min_history=100,
+            min_history=trend_min_history,
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
