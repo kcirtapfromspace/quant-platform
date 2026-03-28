@@ -20,6 +20,11 @@ pub struct ServeArgs {
     /// Path to the DuckDB market data file (optional).
     #[arg(long)]
     pub db: Option<String>,
+
+    /// Path to the Prometheus textfile written by `quant run once`.
+    /// Contents are appended to the /metrics response on each scrape.
+    #[arg(long, default_value = "/tmp/quant_paper_metrics.prom")]
+    pub metrics_file: String,
 }
 
 pub fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
@@ -46,14 +51,22 @@ pub fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("/");
 
-        let (status, body) = match path {
-            "/health" | "/healthz" => ("200 OK", r#"{"status":"ok"}"#.to_string()),
-            "/metrics" => ("200 OK", build_metrics()),
-            _ => ("200 OK", build_status(&args.db)),
+        let (status, content_type, body) = match path {
+            "/health" | "/healthz" => (
+                "200 OK",
+                "application/json",
+                r#"{"status":"ok"}"#.to_string(),
+            ),
+            "/metrics" => (
+                "200 OK",
+                "text/plain; version=0.0.4; charset=utf-8",
+                build_metrics(&args.metrics_file),
+            ),
+            _ => ("200 OK", "application/json", build_status(&args.db)),
         };
 
         let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         );
@@ -80,11 +93,14 @@ fn build_status(db_path: &Option<String>) -> String {
     .to_string()
 }
 
-fn build_metrics() -> String {
-    // Minimal Prometheus-compatible metrics
-    r#"# HELP quant_up Whether the quant service is up
-# TYPE quant_up gauge
-quant_up 1
-"#
-    .to_string()
+fn build_metrics(metrics_file: &str) -> String {
+    let mut out = String::from(
+        "# HELP quant_up Whether the quant service is up\n\
+         # TYPE quant_up gauge\n\
+         quant_up 1\n",
+    );
+    if let Ok(extra) = std::fs::read_to_string(metrics_file) {
+        out.push_str(&extra);
+    }
+    out
 }

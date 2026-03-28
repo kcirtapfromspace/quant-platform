@@ -45,6 +45,12 @@ pub struct RunOnceArgs {
     /// Minimum dollar amount per order (skip smaller trades).
     #[arg(long, default_value = "100")]
     pub min_order_value: f64,
+
+    /// Path to write Prometheus textfile metrics after each cycle.
+    /// The file is consumed by `quant serve --metrics-file`.
+    /// Defaults to /tmp/quant_paper_metrics.prom when not set.
+    #[arg(long, default_value = "/tmp/quant_paper_metrics.prom")]
+    pub metrics_file: String,
 }
 
 pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
@@ -181,6 +187,30 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
         rebalance.turnover * 100.0,
     );
 
+    // ── 7. Emit Prometheus metrics ────────────────────────────────────────
+    let pnl_cumulative = oms.portfolio_value() - args.cash;
+    let daily_pnl_pct = pnl_cumulative / args.cash;
+    if let Err(e) = write_paper_metrics(&args.metrics_file, pnl_cumulative, daily_pnl_pct) {
+        warn!("failed to write paper metrics to {}: {e}", args.metrics_file);
+    }
+
+    Ok(())
+}
+
+/// Write `quant_paper_pnl_cumulative` and `quant_paper_daily_pnl_pct` to a
+/// Prometheus text-format file so that `quant serve` can expose them.
+fn write_paper_metrics(path: &str, pnl_cumulative: f64, daily_pnl_pct: f64) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let mut f = std::fs::File::create(path)?;
+    write!(
+        f,
+        "# HELP quant_paper_pnl_cumulative Running cumulative P&L in USD since strategy inception\n\
+         # TYPE quant_paper_pnl_cumulative gauge\n\
+         quant_paper_pnl_cumulative {pnl_cumulative}\n\
+         # HELP quant_paper_daily_pnl_pct Daily P&L as a fraction of starting notional\n\
+         # TYPE quant_paper_daily_pnl_pct gauge\n\
+         quant_paper_daily_pnl_pct {daily_pnl_pct}\n"
+    )?;
     Ok(())
 }
 

@@ -238,6 +238,79 @@
           "legendFormat": "p99"
         }
       ]
+    },
+    {
+      "id": 9,
+      "type": "gauge",
+      "title": "Daily P&L %",
+      "description": "Daily P&L as % of starting notional. Panel turns red at -3% — matches PaperDailyPnLHalt alert threshold.",
+      "gridPos": { "x": 0, "y": 19, "w": 6, "h": 5 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true,
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": -0.05,
+          "max": 0.05,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -0.03 },
+              { "color": "green", "value": 0 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "quant_paper_daily_pnl_pct",
+          "legendFormat": "Daily P&L %",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Cumulative P&L",
+      "description": "Running cumulative P&L in USD since strategy inception.",
+      "gridPos": { "x": 6, "y": 19, "w": 18, "h": 8 },
+      "options": {
+        "tooltip": { "mode": "single" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "quant_paper_pnl_cumulative",
+          "legendFormat": "Cumulative P&L"
+        }
+      ]
     }
   ]
 }
