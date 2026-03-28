@@ -1,0 +1,13 @@
+[package]
+name = "quant-bayes"
+version = "0.1.0"
+edition = "2021"
+description = "Bayesian inference primitives for quant-rs: conjugate models and posterior samplers"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+rv = "0.19"
+nalgebra = "0.33"
+rand = "0.8"

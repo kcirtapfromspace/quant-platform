@@ -9,6 +9,7 @@ members = [
     "quant-portfolio",
     "quant-data",
     "quant-cli",
+    "quant-bayes",
 ]
 
 [profile.release]
