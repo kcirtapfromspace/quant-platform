@@ -20,6 +20,7 @@ from quant.oms.reconciliation import (
     ReconciliationConfig,
     ReconciliationReport,
 )
+from quant.oms.risk_enforcing import RejectionStats, RiskEnforcingOMS, RiskRejectionError
 from quant.oms.system import OrderManagementSystem
 
 __all__ = [
@@ -39,6 +40,9 @@ __all__ = [
     "PositionSnapshot",
     "ReconciliationConfig",
     "ReconciliationReport",
+    "RejectionStats",
+    "RiskEnforcingOMS",
+    "RiskRejectionError",
     "SQLiteStateStore",
     "TimeInForce",
 ]
