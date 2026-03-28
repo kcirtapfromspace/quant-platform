@@ -37,3 +37,6 @@ backtest-results/
 # Demo frontend
 demo/node_modules/
 demo/dist/
+
+# Paperclip agent infrastructure
+.agents/
