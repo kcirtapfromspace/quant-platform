@@ -12,6 +12,7 @@
 //! ```
 
 mod cmd_backtest;
+mod cmd_benchmark;
 mod cmd_ingest;
 mod cmd_run;
 mod cmd_serve;
@@ -44,8 +45,19 @@ enum Commands {
     },
     /// Backtesting commands.
     Backtest(cmd_backtest::BacktestArgs),
+    /// OOS benchmark suite.
+    Benchmark {
+        #[command(subcommand)]
+        suite: BenchmarkSuite,
+    },
     /// HTTP status server for k8s deployments.
     Serve(cmd_serve::ServeArgs),
+}
+
+#[derive(Subcommand)]
+pub enum BenchmarkSuite {
+    /// QUA-68: Bayesian vs EMA AdaptiveSignalCombiner walk-forward benchmark.
+    Qua68(cmd_benchmark::BenchmarkQua68Args),
 }
 
 #[derive(Subcommand)]
@@ -82,6 +94,9 @@ fn main() -> anyhow::Result<()> {
             RunAction::Once(args) => cmd_run::run_once(args),
         },
         Commands::Backtest(args) => cmd_backtest::run_backtest_cmd(args),
+        Commands::Benchmark { suite } => match suite {
+            BenchmarkSuite::Qua68(args) => cmd_benchmark::run_benchmark_qua68(args),
+        },
         Commands::Serve(args) => cmd_serve::run_serve(args),
     }
 }
