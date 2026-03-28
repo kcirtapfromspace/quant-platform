@@ -332,6 +332,13 @@ class SymbolWfResult(NamedTuple):
     base_is_sharpes: list[float]
     bayes_oos_sharpes: list[float]
     base_oos_sharpes: list[float]
+    # Per-fold max drawdowns for correct cross-sectional aggregation.
+    # Do NOT concatenate OOS returns across symbols — that artificially
+    # compounds equity across independent time series and produces a
+    # spurious 100% drawdown for any strategy with marginally negative
+    # mean return over 50×64×30 = 96k+ bars (QUA-71 root cause).
+    bayes_fold_maxdds: list[float]
+    base_fold_maxdds: list[float]
 
 
 def _equity_curve_to_rets(curve: list[tuple]) -> list[float]:
@@ -443,6 +450,10 @@ def run_wf_symbol(
     base_is_sharpes: list[float] = []
     bayes_oos_sharpes: list[float] = []
     base_oos_sharpes: list[float] = []
+    # Per-fold max drawdowns: avoids the QUA-71 concatenation artifact
+    # where 50-symbol × 64-fold return stacking produces spurious 100% dd.
+    bayes_fold_maxdds: list[float] = []
+    base_fold_maxdds: list[float] = []
 
     for fold in range(n_folds):
         oos_start = train_window + fold * oos_window
@@ -473,8 +484,14 @@ def run_wf_symbol(
         base_oos_sharpes.append(sr["sharpe_ratio"])
         bayes_trade_rets.extend(t[3] for t in br["trades"])
         base_trade_rets.extend(t[3] for t in sr["trades"])
-        bayes_oos_rets.extend(_equity_curve_to_rets(br["equity_curve"]))
-        base_oos_rets.extend(_equity_curve_to_rets(sr["equity_curve"]))
+
+        fold_b_rets = _equity_curve_to_rets(br["equity_curve"])
+        fold_s_rets = _equity_curve_to_rets(sr["equity_curve"])
+        bayes_oos_rets.extend(fold_b_rets)
+        base_oos_rets.extend(fold_s_rets)
+        # Collect per-fold drawdown (not cumulative across folds/symbols)
+        bayes_fold_maxdds.append(max_drawdown(fold_b_rets))
+        base_fold_maxdds.append(max_drawdown(fold_s_rets))
 
     return SymbolWfResult(
         bayes_oos_rets=bayes_oos_rets,
@@ -485,6 +502,8 @@ def run_wf_symbol(
         base_is_sharpes=base_is_sharpes,
         bayes_oos_sharpes=bayes_oos_sharpes,
         base_oos_sharpes=base_oos_sharpes,
+        bayes_fold_maxdds=bayes_fold_maxdds,
+        base_fold_maxdds=base_fold_maxdds,
     )
 
 
@@ -596,6 +615,9 @@ def main() -> None:
     all_base_is_sh: list[float] = []
     all_bayes_oos_sh: list[float] = []
     all_base_oos_sh: list[float] = []
+    # Per-fold drawdowns aggregated across all symbols (QUA-71 fix)
+    all_bayes_fold_maxdds: list[float] = []
+    all_base_fold_maxdds: list[float] = []
 
     for i, sym in enumerate(valid_symbols, 1):
         prices = sym_prices[sym]
@@ -612,16 +634,27 @@ def main() -> None:
         all_base_is_sh.extend(r.base_is_sharpes)
         all_bayes_oos_sh.extend(r.bayes_oos_sharpes)
         all_base_oos_sh.extend(r.base_oos_sharpes)
+        all_bayes_fold_maxdds.extend(r.bayes_fold_maxdds)
+        all_base_fold_maxdds.extend(r.base_fold_maxdds)
 
     print()  # clear progress line
 
     # ── Aggregate metrics ─────────────────────────────────────────────────────
+    # Sharpe: from concatenated per-symbol OOS returns (same baseline as before)
     bayes_sharpe = sharpe_ratio(all_bayes_oos_rets)
     base_sharpe = sharpe_ratio(all_base_oos_rets)
     bayes_pf = profit_factor(all_bayes_trades)
     base_pf = profit_factor(all_base_trades)
-    bayes_maxdd = max_drawdown(all_bayes_oos_rets)
-    base_maxdd = max_drawdown(all_base_oos_rets)
+    # Max drawdown: mean of per-fold drawdowns (QUA-71 fix — avoids 100% artifact
+    # from compounding equity across 50×64×30 = 96k sequential returns)
+    bayes_maxdd = (
+        sum(all_bayes_fold_maxdds) / len(all_bayes_fold_maxdds)
+        if all_bayes_fold_maxdds else 0.0
+    )
+    base_maxdd = (
+        sum(all_base_fold_maxdds) / len(all_base_fold_maxdds)
+        if all_base_fold_maxdds else 0.0
+    )
     bayes_wfe = mean_wfe(all_bayes_is_sh, all_bayes_oos_sh)
     base_wfe = mean_wfe(all_base_is_sh, all_base_oos_sh)
 
@@ -685,6 +718,7 @@ def main() -> None:
         "baseline": {
             "sharpe": round(base_sharpe, 4),
             "pf": round(base_pf_v, 4),
+            # max_dd = mean of per-fold drawdowns (QUA-71 fix: not concatenated)
             "max_dd": round(base_maxdd, 4),
             "wfe": round(base_wfe, 4),
             "n_trades": len(all_base_trades),
@@ -702,6 +736,11 @@ def main() -> None:
             "max_dd": round((bayes_maxdd - base_maxdd) * 100, 4),
             "wfe": round(bayes_wfe - base_wfe, 4),
         },
+        "methodology_note": (
+            "max_dd is mean of per-fold OOS drawdowns (not concatenated cross-symbol equity). "
+            "QUA-71 fix: concatenating 50-symbol x 64-fold returns into a single equity series "
+            "artificially produced 100% drawdown for any strategy with negative mean return."
+        ),
         "gate2": {
             "pf_target": 1.25,
             "result": gate_result,
