@@ -14,7 +14,7 @@ pub mod error;
 pub mod optimizer;
 pub mod rebalancer;
 
-pub use alpha::{AlphaScore, AlphaCombiner, CombinationMethod};
+pub use alpha::{AlphaCombiner, AlphaScore, CombinationMethod};
 pub use covariance::estimate_covariance;
 pub use error::{PortfolioError, PortfolioResult};
 pub use optimizer::{OptimizationMethod, OptimizationResult, Optimizer};

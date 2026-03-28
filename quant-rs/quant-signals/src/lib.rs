@@ -213,7 +213,11 @@ pub fn trend_following_signal(
     } else {
         let mean_abs: f64 =
             hist_valid.iter().map(|v| v.abs()).sum::<f64>() / hist_valid.len() as f64;
-        if mean_abs == 0.0 { 1.0 } else { mean_abs }
+        if mean_abs == 0.0 {
+            1.0
+        } else {
+            mean_abs
+        }
     };
 
     let hist_std = if hist_std < 1e-12 { 1.0 } else { hist_std };
@@ -323,16 +327,14 @@ mod tests {
 
     #[test]
     fn test_mean_reversion_no_bands_returns_zero() {
-        let (s, c, t) =
-            mean_reversion_signal(&[f64::NAN], &[f64::NAN], &[f64::NAN], &[0.0], 2.0);
+        let (s, c, t) = mean_reversion_signal(&[f64::NAN], &[f64::NAN], &[f64::NAN], &[0.0], 2.0);
         assert_eq!((s, c, t), (0.0, 0.0, 0.0));
     }
 
     #[test]
     fn test_mean_reversion_zero_bandwidth_returns_zero() {
         // upper == lower → zero bandwidth
-        let (s, c, t) =
-            mean_reversion_signal(&[100.0], &[100.0], &[100.0], &[0.0], 2.0);
+        let (s, c, t) = mean_reversion_signal(&[100.0], &[100.0], &[100.0], &[0.0], 2.0);
         assert_eq!((s, c, t), (0.0, 0.0, 0.0));
     }
 
@@ -347,8 +349,7 @@ mod tests {
 
     #[test]
     fn test_mean_reversion_output_in_range() {
-        let (s, c, t) =
-            mean_reversion_signal(&[100.0], &[106.0], &[94.0], &[0.05], 2.0);
+        let (s, c, t) = mean_reversion_signal(&[100.0], &[106.0], &[94.0], &[0.05], 2.0);
         assert!((-1.0..=1.0).contains(&s));
         assert!((0.0..=1.0).contains(&c));
         assert!((-1.0..=1.0).contains(&t));

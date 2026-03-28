@@ -13,6 +13,7 @@ quant-data = { path = "../quant-data" }
 quant-oms = { path = "../quant-oms" }
 quant-portfolio = { path = "../quant-portfolio" }
 quant-risk = { path = "../quant-risk" }
+quant-features = { path = "../quant-features" }
 quant-signals = { path = "../quant-signals" }
 quant-backtest = { path = "../quant-backtest" }
 clap = { version = "4", features = ["derive"] }

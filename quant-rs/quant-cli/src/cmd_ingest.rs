@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use clap::Args;
-use quant_data::{IngestMode, IngestionPipeline, MarketDataStore};
 use quant_data::ingest::yahoo::YahooFinanceSource;
+use quant_data::{IngestMode, IngestionPipeline, MarketDataStore};
 use tracing::info;
 
 // ── ingest run ────────────────────────────────────────────────────────────────
@@ -38,23 +38,15 @@ pub fn run_ingest(args: IngestRunArgs) -> anyhow::Result<()> {
     let source = YahooFinanceSource::new();
     let pipeline = IngestionPipeline::new(store, source);
 
-    info!(
-        "Ingesting {} symbols (mode={:?})",
-        symbols.len(),
-        args.mode
-    );
+    info!("Ingesting {} symbols (mode={:?})", symbols.len(), args.mode);
 
     let result = pipeline.run(&symbols, args.mode, start, end)?;
     println!("{}", result.summary());
 
     if !result.gaps_detected.is_empty() {
-        println!(
-            "Gaps detected in {} symbol(s):",
-            result.gaps_detected.len()
-        );
+        println!("Gaps detected in {} symbol(s):", result.gaps_detected.len());
         for (sym, gaps) in &result.gaps_detected {
-            let preview: Vec<String> =
-                gaps.iter().take(5).map(|d| d.to_string()).collect();
+            let preview: Vec<String> = gaps.iter().take(5).map(|d| d.to_string()).collect();
             let suffix = if gaps.len() > 5 { "..." } else { "" };
             println!("  {}: {}{}", sym, preview.join(", "), suffix);
         }
@@ -104,12 +96,10 @@ fn resolve_symbols(arg: Option<&str>) -> Vec<String> {
         return s.split(',').map(|x| x.trim().to_uppercase()).collect();
     }
     // Default universe — can be overridden via --symbols
-    vec![
-        "AAPL", "GOOG", "MSFT", "AMZN", "META", "NVDA", "JPM", "XOM",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect()
+    vec!["AAPL", "GOOG", "MSFT", "AMZN", "META", "NVDA", "JPM", "XOM"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 fn parse_date(s: &str) -> anyhow::Result<NaiveDate> {
@@ -121,6 +111,9 @@ fn parse_mode(s: &str) -> Result<IngestMode, String> {
     match s {
         "incremental" => Ok(IngestMode::Incremental),
         "full" => Ok(IngestMode::Full),
-        other => Err(format!("unknown mode '{}' (expected: incremental, full)", other)),
+        other => Err(format!(
+            "unknown mode '{}' (expected: incremental, full)",
+            other
+        )),
     }
 }

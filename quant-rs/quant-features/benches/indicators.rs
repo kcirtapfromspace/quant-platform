@@ -20,7 +20,9 @@ fn make_prices(n: usize) -> Vec<f64> {
 }
 
 fn make_volumes(n: usize) -> Vec<f64> {
-    (0..n).map(|i| 1_000_000.0 + (i as f64 * 7.0).sin() * 200_000.0).collect()
+    (0..n)
+        .map(|i| 1_000_000.0 + (i as f64 * 7.0).sin() * 200_000.0)
+        .collect()
 }
 
 const N: usize = 10_000;
@@ -32,7 +34,9 @@ fn bench_returns(c: &mut Criterion) {
 
 fn bench_log_returns(c: &mut Criterion) {
     let p = make_prices(N);
-    c.bench_function("log_returns_10k", |b| b.iter(|| qf::log_returns(black_box(&p))));
+    c.bench_function("log_returns_10k", |b| {
+        b.iter(|| qf::log_returns(black_box(&p)))
+    });
 }
 
 fn bench_rolling_mean(c: &mut Criterion) {
@@ -84,8 +88,12 @@ fn bench_bollinger(c: &mut Criterion) {
     let p = make_prices(N);
     let mut group = c.benchmark_group("bollinger_20_10k");
     group.bench_function("bb_mid", |b| b.iter(|| qf::bb_mid(black_box(&p), 20)));
-    group.bench_function("bb_upper", |b| b.iter(|| qf::bb_upper(black_box(&p), 20, 2.0)));
-    group.bench_function("bb_lower", |b| b.iter(|| qf::bb_lower(black_box(&p), 20, 2.0)));
+    group.bench_function("bb_upper", |b| {
+        b.iter(|| qf::bb_upper(black_box(&p), 20, 2.0))
+    });
+    group.bench_function("bb_lower", |b| {
+        b.iter(|| qf::bb_lower(black_box(&p), 20, 2.0))
+    });
     group.bench_function("bb_bandwidth", |b| {
         b.iter(|| qf::bb_bandwidth(black_box(&p), 20, 2.0))
     });
@@ -95,7 +103,9 @@ fn bench_bollinger(c: &mut Criterion) {
 fn bench_volume(c: &mut Criterion) {
     let v = make_volumes(N);
     let mut group = c.benchmark_group("volume_20_10k");
-    group.bench_function("volume_sma", |b| b.iter(|| qf::volume_sma(black_box(&v), 20)));
+    group.bench_function("volume_sma", |b| {
+        b.iter(|| qf::volume_sma(black_box(&v), 20))
+    });
     group.bench_function("volume_ratio", |b| {
         b.iter(|| qf::volume_ratio(black_box(&v), 20))
     });

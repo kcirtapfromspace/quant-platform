@@ -86,12 +86,7 @@ impl YahooFinanceSource {
             .from_utc_datetime(&start.and_hms_opt(0, 0, 0).unwrap())
             .timestamp();
         let end_ts = Utc
-            .from_utc_datetime(
-                &end.succ_opt()
-                    .unwrap_or(end)
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap(),
-            )
+            .from_utc_datetime(&end.succ_opt().unwrap_or(end).and_hms_opt(0, 0, 0).unwrap())
             .timestamp();
 
         let url = format!(
@@ -154,17 +149,8 @@ impl YahooFinanceSource {
                 Some(v) => v,
                 None => continue,
             };
-            let volume = quote
-                .volume
-                .get(i)
-                .copied()
-                .flatten()
-                .unwrap_or(0.0);
-            let adj_close = adj_closes
-                .get(i)
-                .copied()
-                .flatten()
-                .unwrap_or(close);
+            let volume = quote.volume.get(i).copied().flatten().unwrap_or(0.0);
+            let adj_close = adj_closes.get(i).copied().flatten().unwrap_or(close);
 
             let date = chrono::DateTime::from_timestamp(ts, 0)
                 .map(|dt| dt.naive_utc().date())

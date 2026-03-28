@@ -9,7 +9,9 @@ fn synthetic_prices(n: usize) -> Vec<f64> {
     // Deterministic LCG so benchmarks are reproducible without a dep.
     let mut state: u64 = 42;
     for _ in 1..n {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let norm = ((state >> 33) as f64) / (u32::MAX as f64) - 0.5; // ~[-0.5, 0.5]
         prices.push((prices.last().unwrap() * (1.0 + norm * 0.02)).max(1.0));
     }
@@ -139,11 +141,7 @@ fn bench_trend_following_signal(c: &mut Criterion) {
     let slow_ma = make_rolling_mean(&prices, 50);
     c.bench_function("trend_following_signal", |b| {
         b.iter(|| {
-            trend_following_signal(
-                black_box(&hist),
-                black_box(&fast_ma),
-                black_box(&slow_ma),
-            )
+            trend_following_signal(black_box(&hist), black_box(&fast_ma), black_box(&slow_ma))
         })
     });
 }

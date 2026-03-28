@@ -7,6 +7,6 @@
 pub mod indicators;
 
 pub use indicators::{
-    bb_bandwidth, bb_lower, bb_mid, bb_upper, ema, log_returns, macd, macd_histogram,
-    macd_signal, returns, rolling_mean, rolling_std, rsi, volume_ratio, volume_sma,
+    bb_bandwidth, bb_lower, bb_mid, bb_upper, ema, log_returns, macd, macd_histogram, macd_signal,
+    returns, rolling_mean, rolling_std, rsi, volume_ratio, volume_sma,
 };

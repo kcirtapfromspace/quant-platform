@@ -117,7 +117,11 @@ pub fn macd_signal(prices: &[f64], fast: usize, slow: usize, signal: usize) -> V
 pub fn macd_histogram(prices: &[f64], fast: usize, slow: usize, signal: usize) -> Vec<f64> {
     let macd_line = macd(prices, fast, slow);
     let sig = ema(&macd_line, signal);
-    macd_line.iter().zip(sig.iter()).map(|(m, s)| m - s).collect()
+    macd_line
+        .iter()
+        .zip(sig.iter())
+        .map(|(m, s)| m - s)
+        .collect()
 }
 
 // ─── RSI ─────────────────────────────────────────────────────────────────────
@@ -189,14 +193,20 @@ pub fn bb_mid(prices: &[f64], period: usize) -> Vec<f64> {
 pub fn bb_upper(prices: &[f64], period: usize, num_std: f64) -> Vec<f64> {
     let mid = rolling_mean(prices, period);
     let std = rolling_std(prices, period);
-    mid.iter().zip(std.iter()).map(|(m, s)| m + num_std * s).collect()
+    mid.iter()
+        .zip(std.iter())
+        .map(|(m, s)| m + num_std * s)
+        .collect()
 }
 
 /// Bollinger lower band: `SMA - num_std * std`.
 pub fn bb_lower(prices: &[f64], period: usize, num_std: f64) -> Vec<f64> {
     let mid = rolling_mean(prices, period);
     let std = rolling_std(prices, period);
-    mid.iter().zip(std.iter()).map(|(m, s)| m - num_std * s).collect()
+    mid.iter()
+        .zip(std.iter())
+        .map(|(m, s)| m - num_std * s)
+        .collect()
 }
 
 /// Bollinger bandwidth: `(upper - lower) / mid = 2 * num_std * std / mid`.

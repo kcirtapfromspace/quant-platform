@@ -5,8 +5,8 @@
 //! Results are written to `target/criterion/` as HTML reports.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use quant_risk::{DrawdownCircuitBreaker, ExposureLimits};
 use quant_risk::{kelly_fraction, position_size_fixed_fraction, position_size_vol_target};
+use quant_risk::{DrawdownCircuitBreaker, ExposureLimits};
 
 const CAPITAL: f64 = 1_000_000.0;
 const PRICE: f64 = 150.0;
@@ -14,11 +14,7 @@ const PRICE: f64 = 150.0;
 fn bench_fixed_fraction(c: &mut Criterion) {
     c.bench_function("position_size_fixed_fraction", |b| {
         b.iter(|| {
-            position_size_fixed_fraction(
-                black_box(CAPITAL),
-                black_box(PRICE),
-                black_box(0.02),
-            )
+            position_size_fixed_fraction(black_box(CAPITAL), black_box(PRICE), black_box(0.02))
         })
     });
 }

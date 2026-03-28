@@ -28,7 +28,10 @@ pub fn estimate_covariance(
 
     let n_bars = returns.len() / n_assets;
     if n_bars < 2 {
-        return Err(PortfolioError::InsufficientHistory { needed: 2, got: n_bars });
+        return Err(PortfolioError::InsufficientHistory {
+            needed: 2,
+            got: n_bars,
+        });
     }
 
     let mut cov = sample_covariance(returns, n_assets, n_bars);
@@ -81,12 +84,7 @@ fn sample_covariance(returns: &[f64], n_assets: usize, n_bars: usize) -> Vec<f64
 
 /// Ledoit-Wolf analytical shrinkage intensity (Oracle Approximating Shrinkage).
 /// Uses the simplified formula valid for Gaussian returns.
-fn ledoit_wolf_shrinkage(
-    _returns: &[f64],
-    cov: &[f64],
-    n_assets: usize,
-    n_bars: usize,
-) -> f64 {
+fn ledoit_wolf_shrinkage(_returns: &[f64], cov: &[f64], n_assets: usize, n_bars: usize) -> f64 {
     let p = n_assets as f64;
     let n = n_bars as f64;
 
@@ -158,7 +156,10 @@ mod tests {
             for j in 0..n_assets {
                 if i != j {
                     let off = cov_full_shrink[i * n_assets + j];
-                    assert!(off.abs() < 1e-12, "off-diagonal should be zero with alpha=1.0, got {off}");
+                    assert!(
+                        off.abs() < 1e-12,
+                        "off-diagonal should be zero with alpha=1.0, got {off}"
+                    );
                 }
             }
         }
@@ -169,6 +170,9 @@ mod tests {
     fn test_insufficient_history_error() {
         let returns = vec![0.01_f64; 2]; // 1 bar, 2 assets
         let result = estimate_covariance(&returns, 2, Some(0.0));
-        assert!(matches!(result, Err(PortfolioError::InsufficientHistory { .. })));
+        assert!(matches!(
+            result,
+            Err(PortfolioError::InsufficientHistory { .. })
+        ));
     }
 }

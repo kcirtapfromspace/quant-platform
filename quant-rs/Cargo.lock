@@ -1860,6 +1860,7 @@ dependencies = [
  "clap",
  "quant-backtest",
  "quant-data",
+ "quant-features",
  "quant-oms",
  "quant-portfolio",
  "quant-risk",

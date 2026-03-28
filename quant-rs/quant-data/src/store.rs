@@ -38,8 +38,7 @@ impl MarketDataStore {
             Connection::open_in_memory()?
         } else {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| DataError::Parse(e.to_string()))?;
+                std::fs::create_dir_all(parent).map_err(|e| DataError::Parse(e.to_string()))?;
             }
             Connection::open(path)?
         };
@@ -161,9 +160,7 @@ impl MarketDataStore {
     }
 }
 
-fn row_to_record(
-    row: &duckdb::Row<'_>,
-) -> Result<OhlcvRecord, duckdb::Error> {
+fn row_to_record(row: &duckdb::Row<'_>) -> Result<OhlcvRecord, duckdb::Error> {
     let symbol: String = row.get(0)?;
     let date_str: String = row.get(1)?;
     let open: f64 = row.get(2)?;
@@ -178,7 +175,16 @@ fn row_to_record(
     let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
         .unwrap_or_else(|_| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
 
-    Ok(OhlcvRecord { symbol, date, open, high, low, close, volume, adj_close })
+    Ok(OhlcvRecord {
+        symbol,
+        date,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        adj_close,
+    })
 }
 
 #[cfg(test)]
@@ -214,7 +220,9 @@ mod tests {
         let written = store.upsert(&records).unwrap();
         assert_eq!(written, 3);
 
-        let aapl = store.query("AAPL", nd(2024, 1, 1), nd(2024, 1, 31)).unwrap();
+        let aapl = store
+            .query("AAPL", nd(2024, 1, 1), nd(2024, 1, 31))
+            .unwrap();
         assert_eq!(aapl.len(), 2);
         assert_eq!(aapl[0].close, 103.0);
     }
@@ -243,10 +251,7 @@ mod tests {
                 sample_record("AAPL", nd(2024, 1, 5)),
             ])
             .unwrap();
-        assert_eq!(
-            store.latest_date("AAPL").unwrap(),
-            Some(nd(2024, 1, 5))
-        );
+        assert_eq!(store.latest_date("AAPL").unwrap(), Some(nd(2024, 1, 5)));
     }
 
     #[test]

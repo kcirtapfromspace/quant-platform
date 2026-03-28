@@ -42,7 +42,10 @@ pub struct Rebalancer {
 
 impl Default for Rebalancer {
     fn default() -> Self {
-        Self { threshold: 0.01, min_trade_weight: 0.001 }
+        Self {
+            threshold: 0.01,
+            min_trade_weight: 0.001,
+        }
     }
 }
 
@@ -123,7 +126,10 @@ mod tests {
 
     #[test]
     fn test_no_rebalance_below_threshold() {
-        let rebalancer = Rebalancer { threshold: 0.05, min_trade_weight: 0.001 };
+        let rebalancer = Rebalancer {
+            threshold: 0.05,
+            min_trade_weight: 0.001,
+        };
         let target: HashMap<String, f64> = [("AAPL".to_string(), 0.51)].into_iter().collect();
         let current: HashMap<String, f64> = [("AAPL".to_string(), 0.50)].into_iter().collect();
         let result = rebalancer.rebalance(&target, &current, 100_000.0);
@@ -134,14 +140,12 @@ mod tests {
     #[test]
     fn test_rebalance_above_threshold() {
         let rebalancer = Rebalancer::default();
-        let target: HashMap<String, f64> = [
-            ("AAPL".to_string(), 0.6),
-            ("GOOG".to_string(), 0.4),
-        ].into_iter().collect();
-        let current: HashMap<String, f64> = [
-            ("AAPL".to_string(), 0.3),
-            ("GOOG".to_string(), 0.7),
-        ].into_iter().collect();
+        let target: HashMap<String, f64> = [("AAPL".to_string(), 0.6), ("GOOG".to_string(), 0.4)]
+            .into_iter()
+            .collect();
+        let current: HashMap<String, f64> = [("AAPL".to_string(), 0.3), ("GOOG".to_string(), 0.7)]
+            .into_iter()
+            .collect();
         let result = rebalancer.rebalance(&target, &current, 100_000.0);
         assert!(result.rebalance_triggered);
         assert_eq!(result.trades.len(), 2);
@@ -151,7 +155,9 @@ mod tests {
     fn test_turnover_calculation() {
         let rebalancer = Rebalancer::default();
         let target: HashMap<String, f64> = [("A".to_string(), 1.0)].into_iter().collect();
-        let current: HashMap<String, f64> = [("A".to_string(), 0.5), ("B".to_string(), 0.5)].into_iter().collect();
+        let current: HashMap<String, f64> = [("A".to_string(), 0.5), ("B".to_string(), 0.5)]
+            .into_iter()
+            .collect();
         let result = rebalancer.rebalance(&target, &current, 100_000.0);
         // |1.0-0.5| + |0.0-0.5| = 1.0 → turnover = 0.5
         assert!((result.turnover - 0.5).abs() < 1e-9);
@@ -159,18 +165,25 @@ mod tests {
 
     #[test]
     fn test_buy_sell_classification() {
-        let rebalancer = Rebalancer { threshold: 0.0, min_trade_weight: 0.0 };
-        let target: HashMap<String, f64> = [
-            ("BUY_ME".to_string(), 0.6),
-            ("SELL_ME".to_string(), 0.2),
-        ].into_iter().collect();
-        let current: HashMap<String, f64> = [
-            ("BUY_ME".to_string(), 0.3),
-            ("SELL_ME".to_string(), 0.5),
-        ].into_iter().collect();
+        let rebalancer = Rebalancer {
+            threshold: 0.0,
+            min_trade_weight: 0.0,
+        };
+        let target: HashMap<String, f64> =
+            [("BUY_ME".to_string(), 0.6), ("SELL_ME".to_string(), 0.2)]
+                .into_iter()
+                .collect();
+        let current: HashMap<String, f64> =
+            [("BUY_ME".to_string(), 0.3), ("SELL_ME".to_string(), 0.5)]
+                .into_iter()
+                .collect();
         let result = rebalancer.rebalance(&target, &current, 1_000.0);
         let buy = result.trades.iter().find(|t| t.symbol == "BUY_ME").unwrap();
-        let sell = result.trades.iter().find(|t| t.symbol == "SELL_ME").unwrap();
+        let sell = result
+            .trades
+            .iter()
+            .find(|t| t.symbol == "SELL_ME")
+            .unwrap();
         assert_eq!(buy.side, "BUY");
         assert_eq!(sell.side, "SELL");
     }

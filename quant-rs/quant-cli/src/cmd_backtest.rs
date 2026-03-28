@@ -65,7 +65,11 @@ pub fn run_backtest_cmd(args: BacktestArgs) -> anyhow::Result<()> {
 
     let result = run_backtest(&adj_close, &signals, args.commission, args.initial_capital);
 
-    println!("Backtest: {} ({} bars)", args.symbol.to_uppercase(), records.len());
+    println!(
+        "Backtest: {} ({} bars)",
+        args.symbol.to_uppercase(),
+        records.len()
+    );
     println!("  Total return:  {:.2}%", result.total_return * 100.0);
     println!("  CAGR:          {:.2}%", result.cagr * 100.0);
     println!("  Sharpe ratio:  {:.3}", result.sharpe_ratio);

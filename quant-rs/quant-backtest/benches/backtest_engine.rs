@@ -36,14 +36,7 @@ fn bench_backtest_252(c: &mut Criterion) {
     let prices = synthetic_prices(252);
     let signals = momentum_signals(&prices);
     c.bench_function("run_backtest_252bars", |b| {
-        b.iter(|| {
-            run_backtest(
-                black_box(&prices),
-                black_box(&signals),
-                0.001,
-                1_000_000.0,
-            )
-        })
+        b.iter(|| run_backtest(black_box(&prices), black_box(&signals), 0.001, 1_000_000.0))
     });
 }
 
@@ -51,14 +44,7 @@ fn bench_backtest_2520(c: &mut Criterion) {
     let prices = synthetic_prices(2520);
     let signals = momentum_signals(&prices);
     c.bench_function("run_backtest_2520bars", |b| {
-        b.iter(|| {
-            run_backtest(
-                black_box(&prices),
-                black_box(&signals),
-                0.001,
-                1_000_000.0,
-            )
-        })
+        b.iter(|| run_backtest(black_box(&prices), black_box(&signals), 0.001, 1_000_000.0))
     });
 }
 
@@ -66,14 +52,7 @@ fn bench_backtest_10000(c: &mut Criterion) {
     let prices = synthetic_prices(10_000);
     let signals = momentum_signals(&prices);
     c.bench_function("run_backtest_10000bars", |b| {
-        b.iter(|| {
-            run_backtest(
-                black_box(&prices),
-                black_box(&signals),
-                0.001,
-                1_000_000.0,
-            )
-        })
+        b.iter(|| run_backtest(black_box(&prices), black_box(&signals), 0.001, 1_000_000.0))
     });
 }
 

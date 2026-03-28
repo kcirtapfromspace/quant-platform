@@ -8,4 +8,6 @@ pub mod sizing;
 
 pub use circuit_breaker::DrawdownCircuitBreaker;
 pub use limits::ExposureLimits;
-pub use sizing::{kelly_fraction, position_size_fixed_fraction, position_size_vol_target, SizingMethod};
+pub use sizing::{
+    kelly_fraction, position_size_fixed_fraction, position_size_vol_target, SizingMethod,
+};
