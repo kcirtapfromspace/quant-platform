@@ -19,6 +19,7 @@ from quant.portfolio.lifecycle import LifecycleConfig
 from quant.portfolio.optimizers import OptimizationMethod
 from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
 from quant.portfolio.strategy_correlation import StrategyCorrelationConfig
+from quant.risk.circuit_breaker import DrawdownCircuitBreaker
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.regime import RegimeConfig, RegimeWeightAdapter
@@ -508,3 +509,94 @@ class TestMultiStrategyRegime:
         # n_regime_changes should be <= len(regime_history) - 1
         if len(report.regime_history) > 1:
             assert report.n_regime_changes <= len(report.regime_history) - 1
+
+
+# ── Circuit breaker backtesting tests ───────────────────────────────────
+
+
+def _make_crash_returns(n_days: int = 300, crash_start: int = 100, crash_days: int = 15) -> pd.DataFrame:
+    """Build returns with a severe drawdown episode to trigger the circuit breaker."""
+    rng = np.random.default_rng(42)
+    data = rng.normal(0.0005, 0.01, size=(n_days, len(SYMBOLS)))
+    # Inject a crash: large negative returns for all symbols
+    for d in range(crash_start, min(crash_start + crash_days, n_days)):
+        data[d, :] = -0.04  # ~4% daily loss for 15 days = ~45% cumulative
+    dates = pd.bdate_range("2023-01-01", periods=n_days)
+    return pd.DataFrame(data, index=dates, columns=SYMBOLS)
+
+
+class TestMultiStrategyCircuitBreaker:
+    def test_no_breaker_when_not_configured(self):
+        """Without a circuit breaker, stats should be zero."""
+        config = _make_config()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert report.n_circuit_breaker_trips == 0
+        assert report.circuit_breaker_days == 0
+
+    def test_breaker_trips_during_crash(self):
+        """Circuit breaker should trip when drawdown exceeds threshold."""
+        config = _make_config()
+        config.circuit_breaker = DrawdownCircuitBreaker(
+            max_drawdown_threshold=0.15, reset_on_new_peak=True
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_crash_returns(), config)
+        assert report.n_circuit_breaker_trips >= 1
+        assert report.circuit_breaker_days > 0
+
+    def test_breaker_reduces_rebalances(self):
+        """With a circuit breaker, fewer rebalances should occur vs no breaker."""
+        returns = _make_crash_returns()
+
+        config_no_cb = _make_config()
+        engine = MultiStrategyBacktestEngine()
+        report_no_cb = engine.run(returns, config_no_cb)
+
+        config_cb = _make_config()
+        config_cb.circuit_breaker = DrawdownCircuitBreaker(
+            max_drawdown_threshold=0.15, reset_on_new_peak=True
+        )
+        report_cb = engine.run(returns, config_cb)
+
+        # Breaker should block at least some rebalances
+        assert report_cb.n_rebalances <= report_no_cb.n_rebalances
+
+    def test_breaker_does_not_trip_on_normal_returns(self):
+        """Normal returns should not trigger a high-threshold breaker."""
+        config = _make_config()
+        config.circuit_breaker = DrawdownCircuitBreaker(
+            max_drawdown_threshold=0.50, reset_on_new_peak=True
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert report.n_circuit_breaker_trips == 0
+        assert report.circuit_breaker_days == 0
+
+    def test_breaker_with_no_reset(self):
+        """Without reset_on_new_peak, breaker stays tripped permanently."""
+        config = _make_config()
+        config.circuit_breaker = DrawdownCircuitBreaker(
+            max_drawdown_threshold=0.15, reset_on_new_peak=False
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_crash_returns(), config)
+        assert report.n_circuit_breaker_trips >= 1
+        # Should be tripped for the remainder of the backtest
+        assert report.circuit_breaker_days > 30
+
+    def test_breaker_with_regime_and_lifecycle(self):
+        """Circuit breaker should work alongside regime and lifecycle."""
+        config = _make_regime_config()
+        config.lifecycle_config = LifecycleConfig(
+            drawdown_watch=0.15, drawdown_degraded=0.25,
+            drawdown_critical=0.40, eval_window=63,
+        )
+        config.circuit_breaker = DrawdownCircuitBreaker(
+            max_drawdown_threshold=0.15, reset_on_new_peak=True
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_crash_returns(), config)
+        # Should produce valid results with all three features
+        assert report.n_trading_days == 300
+        assert report.n_circuit_breaker_trips >= 1

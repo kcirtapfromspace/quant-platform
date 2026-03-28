@@ -66,6 +66,7 @@ from quant.portfolio.strategy_correlation import (
     StrategyCorrelationMonitor,
     StrategyCorrelationReport,
 )
+from quant.risk.circuit_breaker import DrawdownCircuitBreaker
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig, AdaptiveSignalCombiner
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.regime import RegimeConfig, RegimeDetector, RegimeState, RegimeWeightAdapter
@@ -123,6 +124,10 @@ class MultiStrategyConfig:
                                 at each rebalance based on detected market regime.
         regime_adapter:         Weight adapter that maps regime to capital tilts.
         regime_lookback_days:   Number of days fed to the regime detector.
+        circuit_breaker:        Drawdown circuit breaker.  When configured, the
+                                backtester halts trading (goes flat) when the
+                                portfolio drawdown exceeds the threshold, resuming
+                                only when the breaker resets.
         min_history:            Min trading days before first trade.
         name:                   Label for the backtest.
     """
@@ -140,6 +145,7 @@ class MultiStrategyConfig:
     regime_config: RegimeConfig | None = None
     regime_adapter: RegimeWeightAdapter | None = None
     regime_lookback_days: int = 252
+    circuit_breaker: DrawdownCircuitBreaker | None = None
     min_history: int = 60
     name: str = "multi_strategy_backtest"
 
@@ -173,6 +179,7 @@ class MultiRebalanceSnapshot:
     lifecycle_report: LifecycleReport | None = None
     correlation_report: StrategyCorrelationReport | None = None
     regime_state: RegimeState | None = None
+    circuit_breaker_active: bool = False
 
 
 @dataclass
@@ -215,6 +222,10 @@ class MultiStrategyBacktestReport:
     # Regime history (time series of regime labels at each rebalance)
     regime_history: pd.Series = field(default_factory=lambda: pd.Series(dtype=object), repr=False)
     n_regime_changes: int = 0
+
+    # Circuit breaker stats
+    n_circuit_breaker_trips: int = 0
+    circuit_breaker_days: int = 0
 
     def summary(self) -> str:
         """Return a human-readable summary."""
@@ -338,6 +349,9 @@ class MultiStrategyBacktestEngine:
         n_crowding = 0
         regime_records: list[tuple[object, str]] = []  # (date, regime_label)
         last_regime_label: str = ""
+        cb_trip_count = 0
+        cb_active_days = 0
+        cb_was_active = False
 
         for i in range(n_days):
             dt = dates[i]
@@ -364,11 +378,26 @@ class MultiStrategyBacktestEngine:
                             drifted[sym] = new_w
                     weights = drifted
 
+            # ── 1b. Circuit breaker check ────────────────────────────────
+            cb = config.circuit_breaker
+            cb_active = False
+            if cb is not None:
+                approved, _reason = cb.check(portfolio_value)
+                if not approved:
+                    cb_active = True
+                    cb_active_days += 1
+                    if not cb_was_active:
+                        cb_trip_count += 1
+                    # Go flat: liquidate all positions (no cost on day-of)
+                    weights = {}
+                cb_was_active = cb_active
+
             # ── 2. Rebalance ───────────────────────────────────────────
             days_since_rebalance += 1
 
             if (
-                days_since_rebalance >= config.rebalance_frequency
+                not cb_active
+                and days_since_rebalance >= config.rebalance_frequency
                 and i >= config.min_history
             ):
                 visible = returns.iloc[: i + 1]
@@ -645,6 +674,8 @@ class MultiStrategyBacktestEngine:
             n_crowding_events=n_crowding,
             regime_history=regime_history,
             n_regime_changes=n_regime_changes,
+            n_circuit_breaker_trips=cb_trip_count,
+            circuit_breaker_days=cb_active_days,
         )
 
         logger.info(
