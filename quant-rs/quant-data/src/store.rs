@@ -231,7 +231,7 @@ mod tests {
     fn upsert_is_idempotent() {
         let store = MarketDataStore::open(":memory:").unwrap();
         let rec = sample_record("AAPL", nd(2024, 1, 2));
-        store.upsert(&[rec.clone()]).unwrap();
+        store.upsert(std::slice::from_ref(&rec)).unwrap();
         store.upsert(&[rec]).unwrap();
         assert_eq!(store.count(Some("AAPL")).unwrap(), 1);
     }

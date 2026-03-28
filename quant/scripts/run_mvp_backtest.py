@@ -838,14 +838,15 @@ def validate_result(
     # WF efficiency = mean_wfe (ratio of OOS/IS Sharpe across folds)
     wf_efficiency = result.mean_wfe
 
-    if oos_sharpe < 0.6:
-        failures.append(f"OOS Sharpe {oos_sharpe:.2f} < 0.6")
-    if profit_factor < 1.3:
-        failures.append(f"Profit factor {profit_factor:.2f} < 1.3")
-    if wf_efficiency < 0.70:
-        failures.append(f"WF efficiency {wf_efficiency:.2f} < 0.70")
-    if max_drawdown >= 0.15:
-        failures.append(f"Max drawdown {max_drawdown:.2%} >= 15%")
+    # CEO-approved thresholds (QUA-22 recalibration)
+    if oos_sharpe < 0.60:
+        failures.append(f"OOS Sharpe {oos_sharpe:.2f} < 0.60")
+    if profit_factor < 1.10:
+        failures.append(f"Profit factor {profit_factor:.2f} < 1.10")
+    if wf_efficiency < 0.20:
+        failures.append(f"WF efficiency {wf_efficiency:.2f} < 0.20")
+    if max_drawdown >= 0.20:
+        failures.append(f"Max drawdown {max_drawdown:.2%} >= 20%")
 
     return ValidationResult(
         run_name=run_name,

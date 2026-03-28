@@ -390,7 +390,7 @@ pub fn run_portfolio_backtest(
     // Only update weights at rebalance points; hold between them.
     let mut last_rebalance_weights = vec![0.0_f64; n_assets];
 
-    for bar in 1..n_bars {
+    for (bar, bar_weights) in weights.iter_mut().enumerate().skip(1) {
         let is_rebalance = (bar - 1) % config.rebalance_every == 0;
 
         if is_rebalance {
@@ -410,7 +410,7 @@ pub fn run_portfolio_backtest(
             // If total ≈ 0, keep previous weights (stay in current allocation).
         }
 
-        weights[bar] = last_rebalance_weights.clone();
+        *bar_weights = last_rebalance_weights.clone();
     }
 
     // ── Step 2: Compute portfolio returns with drift + transaction costs ─────
