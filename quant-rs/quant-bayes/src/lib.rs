@@ -2,9 +2,12 @@
 //!
 //! - Phase 1: `BayesianModel` / `PosteriorSampler` traits (conjugate scaffolding)
 //! - Phase 2: `HmmRegimeModel` — 2-state HMM with Gaussian emissions
+//! - Phase 3: `NormalGammaTracker` — conjugate IC estimation
 
+pub mod conjugate;
 pub mod hmm;
 
+pub use conjugate::NormalGammaTracker;
 pub use hmm::{HmmRegimeModel, RegimeState};
 
 use rand::Rng;

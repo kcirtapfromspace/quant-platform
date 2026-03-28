@@ -3,9 +3,10 @@
 //! Phase 4: full port of MomentumSignal, MeanReversionSignal, TrendFollowingSignal.
 //! Phase 1 trait/struct definitions are preserved for API compatibility.
 //! Phase 5: HMM-based regime detection via `RegimeDetector` / `RegimeWeightAdapter`.
+//! Phase 6: Bayesian IC-weighted `AdaptiveSignalCombiner`.
 
 pub use quant_bayes::RegimeState;
-use quant_bayes::HmmRegimeModel;
+use quant_bayes::{BayesianModel, HmmRegimeModel, NormalGammaTracker};
 
 // ── Phase-1 types (preserved) ─────────────────────────────────────────────
 
@@ -551,5 +552,143 @@ mod regime_tests {
         // Ensure RegimeState is accessible from quant_signals.
         let _ = RegimeState::LowVol;
         let _ = RegimeState::HighVol;
+    }
+}
+
+// ── Bayesian IC-weighted signal combiner ──────────────────────────────────────
+
+/// Adaptive signal combiner that weights each signal by its Bayesian IC estimate.
+///
+/// One `NormalGammaTracker` per signal slot tracks the information coefficient
+/// (IC) online.  At each bar, `combine()` returns an IC-weighted average of the
+/// provided signal values.  Negative-IC slots are down-weighted to zero.
+///
+/// # Replacing EMA weighting
+/// Previously, `AdaptiveSignalCombiner` used an EMA decay on raw signal scores
+/// to approximate IC.  Now each slot holds a `NormalGammaTracker` whose
+/// `posterior_mean()` is the current IC estimate — probabilistically calibrated
+/// and uncertainty-aware.
+pub struct AdaptiveSignalCombiner {
+    trackers: Vec<NormalGammaTracker>,
+}
+
+impl AdaptiveSignalCombiner {
+    /// Create a combiner for `n_signals` slots with default hyperpriors.
+    pub fn new(n_signals: usize) -> Self {
+        Self {
+            trackers: (0..n_signals).map(|_| NormalGammaTracker::default()).collect(),
+        }
+    }
+
+    /// Record an IC observation for slot `idx` (e.g. `sign(signal) × next_return`).
+    ///
+    /// Panics if `idx ≥ n_signals`.
+    pub fn update_ic(&mut self, idx: usize, ic_obs: f64) {
+        self.trackers[idx].update(ic_obs);
+    }
+
+    /// Posterior IC estimates `[f64; n_signals]` — `posterior_mean()` per slot.
+    pub fn ic_estimates(&self) -> Vec<f64> {
+        self.trackers.iter().map(|t| t.posterior_mean()).collect()
+    }
+
+    /// IC-weighted combination of `signal_values`.
+    ///
+    /// Uses `max(0, posterior_mean())` as the weight for each slot so that
+    /// signals with negative estimated IC contribute nothing.  Falls back to
+    /// a simple average when all IC estimates are ≤ 0.
+    ///
+    /// `signal_values.len()` must equal `n_signals`.
+    pub fn combine(&self, signal_values: &[f64]) -> f64 {
+        assert_eq!(
+            signal_values.len(),
+            self.trackers.len(),
+            "signal_values length must equal n_signals"
+        );
+        let weights: Vec<f64> = self
+            .trackers
+            .iter()
+            .map(|t| t.posterior_mean().max(0.0))
+            .collect();
+        let total: f64 = weights.iter().sum();
+        if total > 1e-15 {
+            weights
+                .iter()
+                .zip(signal_values.iter())
+                .map(|(w, v)| w * v)
+                .sum::<f64>()
+                / total
+        } else {
+            // All IC ≤ 0: equal-weight average
+            signal_values.iter().sum::<f64>() / signal_values.len() as f64
+        }
+    }
+
+    /// Number of signal slots.
+    pub fn n_signals(&self) -> usize {
+        self.trackers.len()
+    }
+}
+
+// ── AdaptiveSignalCombiner tests ──────────────────────────────────────────────
+
+#[cfg(test)]
+mod combiner_tests {
+    use super::*;
+
+    #[test]
+    fn test_combine_equal_ic_is_average() {
+        let mut combiner = AdaptiveSignalCombiner::new(2);
+        // Feed equal positive IC to both slots
+        for _ in 0..20 {
+            combiner.update_ic(0, 0.3);
+            combiner.update_ic(1, 0.3);
+        }
+        let result = combiner.combine(&[1.0, -1.0]);
+        // Equal IC → equal weight → average = 0.0
+        assert!(result.abs() < 1e-10, "expected 0.0, got {result}");
+    }
+
+    #[test]
+    fn test_combine_higher_ic_slot_dominates() {
+        let mut combiner = AdaptiveSignalCombiner::new(2);
+        // Slot 0 gets strong positive IC, slot 1 gets ~zero IC
+        for _ in 0..100 {
+            combiner.update_ic(0, 0.5);
+            combiner.update_ic(1, 0.0);
+        }
+        // slot 0 signal = 1.0, slot 1 signal = -1.0
+        let result = combiner.combine(&[1.0, -1.0]);
+        // slot 0 dominates → result should be close to 1.0
+        assert!(result > 0.5, "high-IC slot should dominate: {result}");
+    }
+
+    #[test]
+    fn test_combine_all_negative_ic_falls_back_to_average() {
+        let combiner = AdaptiveSignalCombiner::new(2);
+        // Default prior mean = 0.0 → weights are 0 → fallback to average
+        let result = combiner.combine(&[2.0, -2.0]);
+        assert!(result.abs() < 1e-10, "expected equal-weight average: {result}");
+    }
+
+    #[test]
+    fn test_update_ic_increments_tracker_n() {
+        let mut combiner = AdaptiveSignalCombiner::new(3);
+        combiner.update_ic(1, 0.1);
+        combiner.update_ic(1, 0.2);
+        assert_eq!(combiner.trackers[1].n, 2);
+        assert_eq!(combiner.trackers[0].n, 0);
+    }
+
+    #[test]
+    fn test_ic_estimates_length_matches_n_signals() {
+        let combiner = AdaptiveSignalCombiner::new(4);
+        assert_eq!(combiner.ic_estimates().len(), 4);
+    }
+
+    #[test]
+    fn test_n_signals() {
+        let c = AdaptiveSignalCombiner::new(5);
+        assert_eq!(c.n_signals(), 5);
     }
 }
