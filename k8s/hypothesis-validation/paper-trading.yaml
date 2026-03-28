@@ -1,5 +1,7 @@
-# Quant-rs status server: serves health/status endpoints and Prometheus metrics.
-# Exposed via Tailscale Ingress for remote access.
+# Paper-trading stack — quant-server (Rust metrics/status) + run-e (Python daemon)
+# Namespace: hypothesis-validation
+# PVCs: market-data (RWO, 50Gi) + run-e-state (RWO, 1Gi)
+# QUA-90: run-e sidecar added for persistent paper-trading execution
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,7 +27,21 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-creds
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsGroup: 999
+      nodeSelector:
+        kubernetes.io/hostname: talos-lwn-dba
+      volumes:
+        - name: market-data
+          persistentVolumeClaim:
+            claimName: market-data
+        - name: run-e-state
+          persistentVolumeClaim:
+            claimName: run-e-state
       containers:
+        # ── Rust status/metrics server ──────────────────────────────────────
         - name: quant-server
           image: ghcr.io/kcirtapfromspace/quant-rs:latest
           imagePullPolicy: Always
@@ -34,6 +50,11 @@ spec:
             - serve
             - --port
             - "8000"
+            - --db
+            - /data/quant.duckdb
+          volumeMounts:
+            - name: market-data
+              mountPath: /data
           ports:
             - name: http
               containerPort: 8000
@@ -58,6 +79,59 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 10
 
+        # ── Python runE paper-trading daemon ────────────────────────────────
+        # Runs the multi-sleeve momentum strategy against Alpaca paper account.
+        # Fires daily at 16:05 ET (post-close) via APScheduler.
+        # Exposes Prometheus metrics on port 8001.
+        - name: run-e
+          image: ghcr.io/kcirtapfromspace/quant-py:latest
+          imagePullPolicy: Always
+          args:
+            - "--run-hour"
+            - "16"
+            - "--run-minute"
+            - "5"
+            - "--metrics-port"
+            - "8001"
+          env:
+            - name: ALPACA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: alpaca-credentials
+                  key: ALPACA_API_KEY
+            - name: ALPACA_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: alpaca-credentials
+                  key: ALPACA_SECRET_KEY
+            - name: ALPACA_PAPER
+              value: "true"
+            - name: QUANT_DB_PATH
+              value: /data/quant.duckdb
+            - name: QUANT_PAPER_NOTIONAL
+              value: "1000000"
+          volumeMounts:
+            - name: market-data
+              mountPath: /data
+            - name: run-e-state
+              mountPath: /app/data
+          ports:
+            - name: metrics
+              containerPort: 8001
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import os; exit(0 if os.path.exists('/app/data/run_e_state.json') else 0)"]
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            failureThreshold: 3
+
 ---
 apiVersion: v1
 kind: Service
@@ -74,4 +148,7 @@ spec:
     - name: http
       port: 80
       targetPort: 8000
+    - name: run-e-metrics
+      port: 8001
+      targetPort: 8001
   type: ClusterIP

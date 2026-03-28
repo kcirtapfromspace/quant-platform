@@ -5,17 +5,16 @@ on:
     branches: [main, develop]
     paths:
       - "quant-rs/**"
+      - "quant/**"
+      - "pyproject.toml"
       - ".github/workflows/docker-build.yml"
   pull_request:
     branches: [main, develop]
     paths:
       - "quant-rs/**"
-  workflow_dispatch:
-    inputs:
-      push_local:
-        description: "Push to local cluster registry (requires self-hosted runner)"
-        type: boolean
-        default: false
+      - "quant/**"
+      - "pyproject.toml"
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -93,6 +92,61 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-r36.4.0
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-cache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-cache,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Build quant-py ARM64 image (Python runE daemon) and push to ghcr.io
+  # QUA-90: runE paper-trading sidecar
+  # ---------------------------------------------------------------------------
+  build-py:
+    name: Build quant-py ARM64 image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (ARM64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta-py
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-py
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push quant-py
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./quant/Dockerfile.runE
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-py.outputs.tags }}
+          labels: ${{ steps.meta-py.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-py:cache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-py:cache,mode=max
 
   # ---------------------------------------------------------------------------
   # Push to the local Turing Pi cluster registry.
