@@ -37,6 +37,8 @@ import enum
 import math
 from dataclasses import dataclass, field
 
+import numpy as np
+
 # ---------------------------------------------------------------------------
 # Regime types
 # ---------------------------------------------------------------------------
@@ -288,23 +290,14 @@ class RegimeDetector:
         if n_assets < 2 or window < 5:
             return CorrelationRegime.NORMAL, 0.0
 
-        # Extract per-asset return series
-        asset_series: list[list[float]] = [
-            [recent[t][a] for t in range(window)]
-            for a in range(n_assets)
-        ]
-
-        # Average pairwise correlation
-        pair_count = 0
-        corr_sum = 0.0
-        for i in range(n_assets):
-            for j in range(i + 1, n_assets):
-                c = _pearson(asset_series[i], asset_series[j])
-                if math.isfinite(c):
-                    corr_sum += c
-                    pair_count += 1
-
-        avg_corr = corr_sum / pair_count if pair_count > 0 else 0.0
+        # Vectorized pairwise correlation: shape (window, n_assets)
+        returns_2d_arr = np.array(recent, dtype=float)  # (window, n_assets)
+        corr_matrix = np.corrcoef(returns_2d_arr.T)     # (n_assets, n_assets)
+        # Average of upper triangle (exclude diagonal)
+        upper_mask = np.triu(np.ones((n_assets, n_assets), dtype=bool), k=1)
+        upper_vals = corr_matrix[upper_mask]
+        finite_vals = upper_vals[np.isfinite(upper_vals)]
+        avg_corr = float(np.mean(finite_vals)) if len(finite_vals) > 0 else 0.0
 
         if avg_corr >= cfg.corr_high_threshold:
             return CorrelationRegime.HIGH, avg_corr

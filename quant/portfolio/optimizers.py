@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from scipy.stats import rankdata
 
 from quant.portfolio.constraints import PortfolioConstraints
 
@@ -281,6 +282,23 @@ class RiskParityOptimizer(BaseOptimizer):
                 w = w_new
                 break
             w = w_new
+
+        # Alpha tilt: after risk-parity convergence, tilt weights toward
+        # high-alpha assets (CRO decision: Option A, lambda=0.3, ±30% bound).
+        if expected_returns is not None:
+            alpha = expected_returns.reindex(symbols).fillna(0.0).values.astype(float)
+            if np.any(alpha != 0.0):
+                # Rank-normalize alpha to [-1, 1]
+                n_alpha = len(alpha)
+                alpha_rank = (rankdata(alpha) - 1) / max(n_alpha - 1, 1) * 2 - 1
+                # Apply tilt and clip each individual weight change to ±30%
+                lambda_tilt = 0.3
+                tilt = np.clip(1.0 + lambda_tilt * alpha_rank, 0.7, 1.3)
+                w = w * tilt
+                # Re-normalize to sum to 1
+                w_sum = np.sum(np.abs(w))
+                if w_sum > 1e-12:
+                    w = w / w_sum
 
         w = _apply_constraints(w, symbols, constraints)
         # Renormalise
