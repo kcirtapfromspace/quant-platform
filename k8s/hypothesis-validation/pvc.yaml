@@ -1,0 +1,29 @@
+---
+# Market data PVC — shared read-only by all backtest jobs
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-data
+  namespace: hypothesis-validation
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# Backtest results PVC — written by jobs, read by reporting
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backtest-results
+  namespace: hypothesis-validation
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 20Gi

@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - configmap.yaml
+  - parameter-sweep-cronjob.yaml
+  - paper-trading.yaml
+  # backtest-job-template.yaml is not listed here — it is instantiated
+  # dynamically by k8s_hypothesis_sweep.py, not applied directly.

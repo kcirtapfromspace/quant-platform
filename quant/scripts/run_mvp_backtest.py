@@ -250,6 +250,7 @@ def _portfolio_config(
         constraints=PortfolioConstraints(
             long_only=True,
             max_weight=0.05,
+            max_gross_exposure=0.6,
         ),
         rebalance_threshold=0.01,
         cov_lookback_days=252,

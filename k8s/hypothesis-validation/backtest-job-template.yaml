@@ -1,0 +1,125 @@
+# K8s Job template for a single hypothesis backtest run.
+#
+# This file is a template — substitute the following variables before applying:
+#   ${JOB_NAME}         - unique job name (e.g. "hyp-regime-mom-20260328-001")
+#   ${HYPOTHESIS_NAME}  - one of: regime_adaptive_momentum, ic_weighted_ensemble,
+#                         statistical_arbitrage_pairs, hmm_regime_detection, volatility_crush
+#   ${RUN_PARAMS_JSON}  - JSON string with specific param overrides, e.g. '{"lookback_days":42}'
+#   ${START_DATE}       - data start date YYYY-MM-DD
+#   ${END_DATE}         - data end date YYYY-MM-DD
+#   ${IS_WINDOW}        - in-sample window in trading days (default: 252)
+#   ${OOS_WINDOW}       - out-of-sample window in trading days (default: 63)
+#   ${STEP_SIZE}        - step size in trading days (default: 63)
+#
+# To submit all 5 hypotheses via sweep, use:
+#   python quant/scripts/k8s_hypothesis_sweep.py --submit
+#
+# CPU nodes (no GPU selector) handle standard backtests.
+# GPU selector is added automatically for hmm_regime_detection hypothesis.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: hypothesis-validation
+  labels:
+    app: hypothesis-backtest
+    hypothesis: ${HYPOTHESIS_NAME}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 7200  # 2 hours max per job
+  ttlSecondsAfterFinished: 86400  # clean up after 24h
+  template:
+    metadata:
+      labels:
+        app: hypothesis-backtest
+        hypothesis: ${HYPOTHESIS_NAME}
+    spec:
+      restartPolicy: OnFailure
+      # Pin to CPU worker nodes for standard backtests.
+      # For GPU jobs (HMM), the sweep script overrides with GPU nodeSelector.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-role.kubernetes.io/worker
+                    operator: Exists
+      volumes:
+        - name: market-data
+          persistentVolumeClaim:
+            claimName: market-data
+            readOnly: true
+        - name: backtest-results
+          persistentVolumeClaim:
+            claimName: backtest-results
+        - name: hypothesis-params
+          configMap:
+            name: hypothesis-sweep-params
+      containers:
+        - name: backtest
+          image: mirror.registry:5000/quant-rs:latest
+          imagePullPolicy: Always
+          command:
+            - python
+            - -m
+            - quant.scripts.hypothesis_runner
+          env:
+            - name: HYPOTHESIS_NAME
+              value: "${HYPOTHESIS_NAME}"
+            - name: RUN_PARAMS_JSON
+              value: '${RUN_PARAMS_JSON}'
+            - name: START_DATE
+              value: "${START_DATE}"
+            - name: END_DATE
+              value: "${END_DATE}"
+            - name: IS_WINDOW
+              value: "${IS_WINDOW}"
+            - name: OOS_WINDOW
+              value: "${OOS_WINDOW}"
+            - name: STEP_SIZE
+              value: "${STEP_SIZE}"
+            - name: RESULTS_PATH
+              value: /results
+            - name: DB_PATH
+              value: /data/market.duckdb
+            # CRO gate thresholds
+            - name: CRO_SHARPE_MIN
+              valueFrom:
+                configMapKeyRef:
+                  name: hypothesis-config
+                  key: cro_sharpe_min
+            - name: CRO_PROFIT_FACTOR_MIN
+              valueFrom:
+                configMapKeyRef:
+                  name: hypothesis-config
+                  key: cro_profit_factor_min
+            - name: CRO_MAX_DRAWDOWN_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: hypothesis-config
+                  key: cro_max_drawdown_max
+            - name: CRO_WFE_MIN
+              valueFrom:
+                configMapKeyRef:
+                  name: hypothesis-config
+                  key: cro_wfe_min
+            # Prometheus push gateway for metrics export
+            - name: PROMETHEUS_PUSHGATEWAY
+              value: "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091"
+            - name: JOB_NAME
+              value: "${JOB_NAME}"
+          volumeMounts:
+            - name: market-data
+              mountPath: /data
+            - name: backtest-results
+              mountPath: /results
+            - name: hypothesis-params
+              mountPath: /etc/hypothesis-params
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"

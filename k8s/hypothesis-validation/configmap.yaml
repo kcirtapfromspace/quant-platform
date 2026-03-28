@@ -1,0 +1,113 @@
+---
+# Hypothesis definitions and default sweep parameters.
+# Each hypothesis maps to a strategy config consumed by hypothesis-runner.py.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hypothesis-config
+  namespace: hypothesis-validation
+data:
+  # CRO gate thresholds (overridable per-run via env)
+  cro_sharpe_min: "0.60"
+  cro_profit_factor_min: "1.10"
+  cro_max_drawdown_max: "0.20"
+  cro_wfe_min: "0.20"
+
+  # Default walk-forward parameters
+  is_window_days: "252"
+  oos_window_days: "63"
+  step_size_days: "63"
+
+  # Default universe (50 representative S&P 500 symbols)
+  universe: >-
+    AAPL,MSFT,NVDA,GOOGL,META,AVGO,ORCL,AMD,
+    AMZN,TSLA,HD,MCD,NKE,
+    WMT,PG,KO,PEP,
+    JPM,BAC,GS,V,MA,BLK,
+    UNH,JNJ,LLY,ABBV,MRK,TMO,
+    HON,GE,CAT,DE,UPS,
+    XOM,CVX,COP,EOG,
+    NEE,DUK,SO,
+    AMT,PLD,CCI,
+    LIN,SHW,APD,
+    NFLX,DIS,TMUS
+
+  # Data window
+  data_start: "2020-01-01"
+  data_end: "2025-12-31"
+
+  # Result output path (inside the PVC)
+  results_base_path: "/results"
+
+---
+# Per-hypothesis parameter overrides for the parameter sweep.
+# Each key is HYPOTHESIS_NAME, value is JSON with sweep grid.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hypothesis-sweep-params
+  namespace: hypothesis-validation
+data:
+  regime_adaptive_momentum.json: |
+    {
+      "hypothesis": "regime_adaptive_momentum",
+      "description": "Regime-Adaptive Cross-Sectional Momentum",
+      "param_grid": {
+        "lookback_days": [21, 42, 63],
+        "regime_lookback": [126, 252],
+        "max_tilt": [0.2, 0.3, 0.4],
+        "top_n_pct": [0.2, 0.3]
+      }
+    }
+
+  ic_weighted_ensemble.json: |
+    {
+      "hypothesis": "ic_weighted_ensemble",
+      "description": "IC-Weighted Signal Ensemble",
+      "param_grid": {
+        "ic_lookback_days": [21, 42, 63],
+        "decay_halflife": [10, 21],
+        "signals": [
+          ["momentum", "mean_reversion"],
+          ["momentum", "trend", "mean_reversion"]
+        ]
+      }
+    }
+
+  statistical_arbitrage_pairs.json: |
+    {
+      "hypothesis": "statistical_arbitrage_pairs",
+      "description": "Statistical Arbitrage Pairs",
+      "param_grid": {
+        "entry_zscore": [1.5, 2.0, 2.5],
+        "exit_zscore": [0.0, 0.5],
+        "coint_lookback": [63, 126],
+        "max_pairs": [10, 20]
+      }
+    }
+
+  hmm_regime_detection.json: |
+    {
+      "hypothesis": "hmm_regime_detection",
+      "description": "HMM Regime Detection",
+      "param_grid": {
+        "n_states": [2, 3],
+        "hmm_lookback": [126, 252],
+        "emission_features": [
+          ["returns", "volatility"],
+          ["returns", "volatility", "momentum"]
+        ]
+      }
+    }
+
+  volatility_crush.json: |
+    {
+      "hypothesis": "volatility_crush",
+      "description": "Volatility Crush",
+      "param_grid": {
+        "vol_lookback": [10, 21],
+        "crush_threshold_pct": [0.20, 0.30],
+        "holding_days": [3, 5, 10],
+        "vol_ratio_window": [21, 42]
+      }
+    }

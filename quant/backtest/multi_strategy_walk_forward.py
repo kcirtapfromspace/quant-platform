@@ -381,7 +381,9 @@ class MultiStrategyWalkForwardAnalyzer:
         if override_min_history is not None:
             safe_min = override_min_history
         else:
-            safe_min = min(base.min_history, len(fold_data) // 3)
+            # Use base min_history when fold is large enough; cap at half
+            # the fold to guarantee sufficient trading days.
+            safe_min = min(base.min_history, len(fold_data) // 2)
         return MultiStrategyConfig(
             sleeves=base.sleeves,
             rebalance_frequency=base.rebalance_frequency,
