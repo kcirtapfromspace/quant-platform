@@ -18,6 +18,7 @@ from quant.portfolio.engine import PortfolioConfig
 from quant.portfolio.lifecycle import LifecycleConfig
 from quant.portfolio.optimizers import OptimizationMethod
 from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
+from quant.portfolio.strategy_correlation import StrategyCorrelationConfig
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig
 from quant.signals.base import BaseSignal, SignalOutput
 
@@ -270,3 +271,99 @@ class TestMultiStrategyEdgeCases:
         engine = MultiStrategyBacktestEngine()
         report = engine.run(_make_returns(), config)
         assert report.n_rebalances > 0
+
+
+# ── Correlation integration tests ────────────────────────────────────────
+
+
+class TestMultiStrategyCorrelation:
+    def test_correlation_report_in_rebalances(self):
+        """Rebalance snapshots should have correlation reports when configured."""
+        config = _make_config(n_sleeves=2)
+        config.strategy_correlation_config = StrategyCorrelationConfig(
+            window=60, min_observations=10
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        has_corr = any(r.correlation_report is not None for r in report.rebalances)
+        assert has_corr
+
+    def test_correlation_history_populated(self):
+        """avg_strategy_corr_history should be populated."""
+        config = _make_config(n_sleeves=2)
+        config.strategy_correlation_config = StrategyCorrelationConfig(
+            window=60, min_observations=10
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert not report.avg_strategy_corr_history.empty
+
+    def test_no_correlation_when_not_configured(self):
+        """Without config, correlation fields are empty."""
+        config = _make_config()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert report.avg_strategy_corr_history.empty
+        assert report.n_crowding_events == 0
+        for r in report.rebalances:
+            assert r.correlation_report is None
+
+    def test_correlation_values_bounded(self):
+        """Avg correlation should be between -1 and 1."""
+        config = _make_config(n_sleeves=2)
+        config.strategy_correlation_config = StrategyCorrelationConfig(
+            window=60, min_observations=10
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        for val in report.avg_strategy_corr_history:
+            assert -1.0 - 1e-9 <= val <= 1.0 + 1e-9
+
+    def test_three_sleeve_correlation(self):
+        """Three sleeves should produce 3-strategy correlation reports."""
+        config = _make_config(n_sleeves=3)
+        config.strategy_correlation_config = StrategyCorrelationConfig(
+            window=60, min_observations=10
+        )
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        for r in report.rebalances:
+            if r.correlation_report is not None:
+                assert r.correlation_report.n_strategies == 3
+
+
+# ── Signal IC integration tests ──────────────────────────────────────────
+
+
+class TestMultiStrategySignalIC:
+    def test_lifecycle_receives_signal_ic(self):
+        """Lifecycle health should contain IC data after multiple rebalances."""
+        config = _make_config(n_sleeves=2, lifecycle=True)
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        # After multiple rebalances, at least some lifecycle reports
+        # should have strategies with signal_ic populated
+        lc_reports = [r.lifecycle_report for r in report.rebalances if r.lifecycle_report is not None]
+        assert len(lc_reports) > 1
+        # Second report onward should have IC
+        ic_found = False
+        for lc in lc_reports[1:]:
+            for h in lc.strategy_health:
+                if h.signal_ic is not None:
+                    ic_found = True
+                    assert -1.0 <= h.signal_ic <= 1.0
+        assert ic_found, "Expected signal IC to be computed after first rebalance"
+
+    def test_lifecycle_without_ic_still_works(self):
+        """Lifecycle works even without IC — first rebalance has no IC."""
+        config = _make_config(n_sleeves=2, lifecycle=True)
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        first_lc = next(
+            (r.lifecycle_report for r in report.rebalances if r.lifecycle_report is not None),
+            None,
+        )
+        assert first_lc is not None
+        # First cycle should have None IC
+        for h in first_lc.strategy_health:
+            assert h.signal_ic is None

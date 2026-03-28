@@ -61,6 +61,11 @@ from quant.portfolio.lifecycle import (
 )
 from quant.portfolio.position_scaler import PositionScaler, ScalingConfig
 from quant.portfolio.pre_trade import PreTradeConfig, PreTradePipeline
+from quant.portfolio.strategy_correlation import (
+    StrategyCorrelationConfig,
+    StrategyCorrelationMonitor,
+    StrategyCorrelationReport,
+)
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig, AdaptiveSignalCombiner
 from quant.signals.base import BaseSignal, SignalOutput
 
@@ -121,6 +126,7 @@ class MultiStrategyConfig:
     sector_map: dict[str, str] = field(default_factory=dict)
     lifecycle_config: LifecycleConfig | None = None
     apply_lifecycle_realloc: bool = False
+    strategy_correlation_config: StrategyCorrelationConfig | None = None
     min_history: int = 60
     name: str = "multi_strategy_backtest"
 
@@ -152,6 +158,7 @@ class MultiRebalanceSnapshot:
     transaction_costs: float
     n_assets: int
     lifecycle_report: LifecycleReport | None = None
+    correlation_report: StrategyCorrelationReport | None = None
 
 
 @dataclass
@@ -186,6 +193,10 @@ class MultiStrategyBacktestReport:
 
     # Per-sleeve capital weight history
     capital_weight_history: pd.DataFrame = field(repr=False)
+
+    # Strategy correlation (time series of avg inter-strategy correlation)
+    avg_strategy_corr_history: pd.Series = field(default_factory=lambda: pd.Series(dtype=float), repr=False)
+    n_crowding_events: int = 0
 
     def summary(self) -> str:
         """Return a human-readable summary."""
@@ -274,6 +285,11 @@ class MultiStrategyBacktestEngine:
         if config.lifecycle_config is not None:
             lifecycle_mgr = LifecycleManager(config.lifecycle_config)
 
+        # Strategy correlation monitor
+        corr_monitor: StrategyCorrelationMonitor | None = None
+        if config.strategy_correlation_config is not None:
+            corr_monitor = StrategyCorrelationMonitor(config.strategy_correlation_config)
+
         # State
         portfolio_value = config.initial_capital
         weights: dict[str, float] = {}
@@ -281,12 +297,18 @@ class MultiStrategyBacktestEngine:
         total_costs = 0.0
         days_since_rebalance = config.rebalance_frequency
 
+        # IC tracking state
+        last_alpha_scores: dict[str, dict[str, float]] = {}
+        sleeve_ic_history: dict[str, list[float]] = {}
+
         # Collectors
         equity_values: list[float] = []
         daily_rets: list[float] = []
         weights_records: list[dict[str, float]] = []
         cap_weight_records: list[dict[str, float]] = []
         rebalances: list[MultiRebalanceSnapshot] = []
+        corr_records: list[tuple[object, float]] = []  # (date, avg_corr)
+        n_crowding = 0
 
         for i in range(n_days):
             dt = dates[i]
@@ -328,9 +350,10 @@ class MultiStrategyBacktestEngine:
                 # ── 2a. Run each sleeve ────────────────────────────────
                 sleeve_snapshots: list[SleeveSnapshot] = []
                 combined: dict[str, float] = {}
+                cycle_alpha_scores: dict[str, dict[str, float]] = {}
 
                 for sc in config.sleeves:
-                    sleeve_weights = self._run_sleeve(
+                    sleeve_weights, sleeve_alpha = self._run_sleeve(
                         sc=sc,
                         visible=visible,
                         symbols=symbols,
@@ -342,6 +365,9 @@ class MultiStrategyBacktestEngine:
                         portfolio_value=portfolio_value,
                         min_history=config.min_history,
                     )
+
+                    if sleeve_alpha:
+                        cycle_alpha_scores[sc.name] = sleeve_alpha
 
                     if sleeve_weights is not None:
                         cap_w = capital_weights[sc.name]
@@ -357,6 +383,33 @@ class MultiStrategyBacktestEngine:
                                 n_assets=sum(1 for v in scaled.values() if abs(v) > 1e-9),
                             )
                         )
+
+                # ── Compute signal IC from previous period's scores ────
+                if visible.shape[0] >= 2:
+                    last_day_rets = visible.iloc[-1]
+                    for sname, prev_scores in last_alpha_scores.items():
+                        common = [s for s in prev_scores if s in last_day_rets.index]
+                        if len(common) >= 3:
+                            from quant.orchestrator import _rank
+
+                            scores_list = [prev_scores[s] for s in common]
+                            rets_list = [float(last_day_rets[s]) for s in common]
+                            n_c = len(common)
+                            sr = _rank(scores_list)
+                            rr = _rank(rets_list)
+                            mean_sr = sum(sr) / n_c
+                            mean_rr = sum(rr) / n_c
+                            num_v = sum((sr[k] - mean_sr) * (rr[k] - mean_rr) for k in range(n_c))
+                            den_s = sum((sr[k] - mean_sr) ** 2 for k in range(n_c))
+                            den_r = sum((rr[k] - mean_rr) ** 2 for k in range(n_c))
+                            den_v = (den_s * den_r) ** 0.5
+                            ic = num_v / den_v if den_v > 1e-12 else 0.0
+                            if sname not in sleeve_ic_history:
+                                sleeve_ic_history[sname] = []
+                            sleeve_ic_history[sname].append(ic)
+
+                # Store alpha scores for next period's IC
+                last_alpha_scores = dict(cycle_alpha_scores)
 
                 if combined:
                     # ── 2b. Pre-trade pipeline ─────────────────────────
@@ -392,11 +445,18 @@ class MultiStrategyBacktestEngine:
                             strategy_returns = self._compute_sleeve_returns(
                                 snap.target_weights, visible
                             )
+                            # Build IC data for lifecycle snapshot
+                            ic_hist = sleeve_ic_history.get(snap.name, [])
+                            signal_ic = ic_hist[-1] if ic_hist else None
+                            ic_history_series = pd.Series(ic_hist) if ic_hist else None
+
                             lifecycle_mgr.update(
                                 StrategySnapshot(
                                     name=snap.name,
                                     returns_series=strategy_returns,
                                     current_weight=snap.capital_weight,
+                                    signal_ic=signal_ic,
+                                    ic_history=ic_history_series,
                                 )
                             )
                         lifecycle_report = lifecycle_mgr.evaluate()
@@ -410,6 +470,23 @@ class MultiStrategyBacktestEngine:
                                 if rec.strategy in capital_weights:
                                     capital_weights[rec.strategy] = rec.recommended_weight
 
+                    # ── 2e. Strategy correlation evaluation ───────────
+                    correlation_report: StrategyCorrelationReport | None = None
+                    if corr_monitor is not None and len(sleeve_snapshots) >= 2:
+                        strat_rets: dict[str, list[float]] = {}
+                        for snap in sleeve_snapshots:
+                            sr = self._compute_sleeve_returns(snap.target_weights, visible)
+                            if not sr.empty:
+                                strat_rets[snap.name] = sr.tolist()
+                        if len(strat_rets) >= 2:
+                            correlation_report = corr_monitor.evaluate(
+                                strategy_returns=strat_rets,
+                                capital_weights=capital_weights,
+                                timestamp=ts,
+                            )
+                            corr_records.append((dt, correlation_report.avg_pairwise_corr))
+                            n_crowding += len(correlation_report.crowding_alerts)
+
                     dt_date = dt.date() if hasattr(dt, "date") else dt
                     rebalances.append(
                         MultiRebalanceSnapshot(
@@ -421,6 +498,7 @@ class MultiStrategyBacktestEngine:
                             transaction_costs=costs,
                             n_assets=sum(1 for v in combined.values() if abs(v) > 1e-9),
                             lifecycle_report=lifecycle_report,
+                            correlation_report=correlation_report,
                         )
                     )
 
@@ -470,6 +548,13 @@ class MultiStrategyBacktestEngine:
         start_date = dates[0].date() if hasattr(dates[0], "date") else dates[0]
         end_date = dates[-1].date() if hasattr(dates[-1], "date") else dates[-1]
 
+        # Build correlation time series
+        if corr_records:
+            corr_dates, corr_vals = zip(*corr_records, strict=True)
+            avg_corr_history = pd.Series(corr_vals, index=pd.DatetimeIndex(corr_dates), name="avg_strategy_corr")
+        else:
+            avg_corr_history = pd.Series(dtype=float, name="avg_strategy_corr")
+
         report = MultiStrategyBacktestReport(
             name=config.name,
             start_date=start_date,
@@ -491,6 +576,8 @@ class MultiStrategyBacktestEngine:
             weights_history=weights_history,
             rebalances=rebalances,
             capital_weight_history=cap_weight_history,
+            avg_strategy_corr_history=avg_corr_history,
+            n_crowding_events=n_crowding,
         )
 
         logger.info(
@@ -520,10 +607,12 @@ class MultiStrategyBacktestEngine:
         current_weights: dict[str, float],
         portfolio_value: float,
         min_history: int,
-    ) -> dict[str, float] | None:
+    ) -> tuple[dict[str, float] | None, dict[str, float]]:
         """Run one sleeve's signal→alpha→construction pipeline.
 
-        Returns target weights (unscaled by capital weight), or None on failure.
+        Returns ``(target_weights, alpha_scores)`` where target_weights is
+        unscaled by capital weight (or None on failure), and alpha_scores
+        maps symbols to their combined alpha scores for IC computation.
         """
         # Compute signals
         universe_signals: dict[str, list[SignalOutput]] = {}
@@ -553,7 +642,7 @@ class MultiStrategyBacktestEngine:
                 universe_signals[sym] = sym_signals
 
         if not universe_signals:
-            return None
+            return None, {}
 
         # Combine into alpha
         if adaptive is not None:
@@ -573,6 +662,12 @@ class MultiStrategyBacktestEngine:
         else:
             alpha_scores = combiner.combine_universe(timestamp, universe_signals)
 
+        # Extract float scores for IC tracking
+        float_scores = {
+            sym: (a.score if hasattr(a, "score") else float(a))
+            for sym, a in alpha_scores.items()
+        }
+
         # Position scaling
         if sc.scaling_config is not None:
             scaler = PositionScaler(sc.scaling_config)
@@ -587,12 +682,12 @@ class MultiStrategyBacktestEngine:
                 portfolio_value=portfolio_value,
             )
         except Exception:
-            return None
+            return None, float_scores
 
         if not construction.rebalance_triggered:
-            return None
+            return None, float_scores
 
-        return construction.optimization.weights
+        return construction.optimization.weights, float_scores
 
     # ── Helpers ───────────────────────────────────────────────────────
 
