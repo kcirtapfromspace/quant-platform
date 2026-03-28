@@ -55,6 +55,10 @@ from quant.portfolio.lifecycle import (
 )
 from quant.portfolio.position_scaler import PositionScaler, ScalingConfig
 from quant.portfolio.pre_trade import PreTradeConfig, PreTradePipeline, PreTradeResult
+from quant.portfolio.strategy_correlation import (
+    StrategyCorrelationMonitor,
+    StrategyCorrelationReport,
+)
 from quant.risk.circuit_breaker import DrawdownCircuitBreaker
 from quant.risk.engine import (
     Order as RiskOrder,
@@ -165,6 +169,7 @@ class OrchestratorResult:
     pre_trade_result: PreTradeResult | None = None
     lifecycle_report: LifecycleReport | None = None
     risk_report: RiskReport | None = None
+    correlation_report: StrategyCorrelationReport | None = None
     circuit_breaker_tripped: bool = False
     n_submitted: int = 0
     n_rejected: int = 0
@@ -197,6 +202,7 @@ class OrchestratorConfig:
     regime_lookback_days: int = 252
     circuit_breaker: DrawdownCircuitBreaker | None = None
     risk_reporter: RiskReporter | None = None
+    strategy_correlation: StrategyCorrelationMonitor | None = None
     strategy_monitor: StrategyMonitor | None = None
     quality_tracker: ExecutionQualityTracker | None = None
 
@@ -388,6 +394,40 @@ class StrategyOrchestrator:
                         for r in lifecycle_report.recommendations
                     }
 
+            # ── 2d. Strategy correlation evaluation ────────────────────
+            correlation_report: StrategyCorrelationReport | None = None
+            corr_monitor = self._config.strategy_correlation
+            if corr_monitor is not None:
+                corr_window = corr_monitor.config.window
+                corr_returns_df = self._get_returns_history(corr_window)
+                strat_return_lists: dict[str, list[float]] = {}
+                for sr in sleeve_results:
+                    if sr.error:
+                        continue
+                    ret_series = self._compute_sleeve_returns(sr, corr_returns_df)
+                    if not ret_series.empty:
+                        strat_return_lists[sr.name] = ret_series.tolist()
+                if len(strat_return_lists) >= 2:
+                    correlation_report = corr_monitor.evaluate(
+                        strategy_returns=strat_return_lists,
+                        capital_weights=effective_weights,
+                        timestamp=now,
+                    )
+                    if correlation_report.level == "critical":
+                        logger.warning(
+                            "Strategy correlation CRITICAL: avg={:.3f} eff_N={:.1f}",
+                            correlation_report.avg_pairwise_corr,
+                            correlation_report.effective_strategies,
+                        )
+                    elif correlation_report.level == "elevated":
+                        logger.info(
+                            "Strategy correlation elevated: avg={:.3f} eff_N={:.1f}",
+                            correlation_report.avg_pairwise_corr,
+                            correlation_report.effective_strategies,
+                        )
+                    for alert in correlation_report.crowding_alerts:
+                        logger.warning("Crowding: {}", alert.message)
+
             # ── 3. Combine target weights ─────────────────────────────────
             combined = self._combine_weights(sleeve_results)
 
@@ -437,6 +477,7 @@ class StrategyOrchestrator:
                 pre_trade_result=pre_trade_result,
                 lifecycle_report=lifecycle_report,
                 risk_report=risk_report,
+                correlation_report=correlation_report,
                 n_submitted=n_submitted,
                 n_rejected=n_rejected,
             )
@@ -475,6 +516,11 @@ class StrategyOrchestrator:
     def lifecycle_weights(self) -> dict[str, float] | None:
         """Recommended weights from the last lifecycle evaluation, or None."""
         return self._lifecycle_weights
+
+    @property
+    def strategy_correlation(self) -> StrategyCorrelationMonitor | None:
+        """Strategy correlation monitor, or None if not configured."""
+        return self._config.strategy_correlation
 
     @property
     def circuit_breaker(self) -> DrawdownCircuitBreaker | None:

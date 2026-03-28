@@ -22,6 +22,11 @@ from quant.portfolio.lifecycle import HealthStatus, LifecycleConfig, LifecycleRe
 from quant.portfolio.optimizers import OptimizationMethod
 from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
 from quant.portfolio.pre_trade import PreTradeConfig
+from quant.portfolio.strategy_correlation import (
+    StrategyCorrelationConfig,
+    StrategyCorrelationMonitor,
+    StrategyCorrelationReport,
+)
 from quant.risk.circuit_breaker import DrawdownCircuitBreaker
 from quant.risk.engine import RiskConfig
 from quant.risk.limit_checker import LimitConfig, RiskLimitChecker
@@ -1622,3 +1627,115 @@ class TestRiskReporterIntegration:
         report = result.risk_report
         assert report is not None
         assert report.annualised_volatility > 0
+
+
+# ── Strategy correlation integration helpers ─────────────────────────────
+
+
+def _make_corr_orchestrator(
+    *, n_sleeves: int = 2, corr_config: StrategyCorrelationConfig | None = None,
+) -> StrategyOrchestrator:
+    """Build orchestrator with strategy correlation monitor enabled."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    weights = [1.0 / n_sleeves] * n_sleeves
+    signal_names = ["alpha", "beta", "gamma"]
+    sleeves = []
+    for i in range(n_sleeves):
+        offset = (i + 1) * 0.1
+        scores = {sym: min(0.3 + offset + j * 0.05, 0.95) for j, sym in enumerate(symbols)}
+        sleeves.append(
+            StrategySleeve(
+                name=f"strategy_{signal_names[i % len(signal_names)]}",
+                signals=[StubSignal(signal_names[i % len(signal_names)], scores)],
+                capital_weight=weights[i],
+                portfolio_config=PortfolioConfig(
+                    optimization_method=OptimizationMethod.RISK_PARITY,
+                    constraints=PortfolioConstraints(
+                        long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                    ),
+                ),
+            )
+        )
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        strategy_correlation=StrategyCorrelationMonitor(corr_config),
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+# ── Strategy correlation integration tests ───────────────────────────────
+
+
+class TestStrategyCorrelationIntegration:
+    def test_correlation_report_attached(self):
+        """run_once should produce a StrategyCorrelationReport when configured."""
+        orch = _make_corr_orchestrator()
+        result = orch.run_once()
+        assert result.error == ""
+        assert result.correlation_report is not None
+        assert isinstance(result.correlation_report, StrategyCorrelationReport)
+
+    def test_correlation_report_has_strategies(self):
+        """Report should cover all sleeves."""
+        orch = _make_corr_orchestrator(n_sleeves=2)
+        result = orch.run_once()
+        report = result.correlation_report
+        assert report is not None
+        assert report.n_strategies == 2
+
+    def test_correlation_report_none_when_not_configured(self):
+        """Without strategy_correlation, correlation_report should be None."""
+        orch = _make_orchestrator()
+        result = orch.run_once()
+        assert result.correlation_report is None
+
+    def test_correlation_report_has_valid_level(self):
+        """Report level should be one of the expected values."""
+        orch = _make_corr_orchestrator()
+        result = orch.run_once()
+        report = result.correlation_report
+        assert report is not None
+        assert report.level in ("normal", "elevated", "critical")
+
+    def test_correlation_property_exposes_monitor(self):
+        """strategy_correlation property should expose the monitor."""
+        orch = _make_corr_orchestrator()
+        assert orch.strategy_correlation is not None
+        assert isinstance(orch.strategy_correlation, StrategyCorrelationMonitor)
+
+    def test_correlation_summary_not_empty(self):
+        """Report summary should produce readable text."""
+        orch = _make_corr_orchestrator()
+        result = orch.run_once()
+        report = result.correlation_report
+        assert report is not None
+        summary = report.summary()
+        assert len(summary) > 20
+        assert "Strategy Correlation" in summary
+
+    def test_three_sleeve_correlation(self):
+        """Three sleeves should produce a 3x3 correlation matrix."""
+        orch = _make_corr_orchestrator(n_sleeves=3)
+        result = orch.run_once()
+        report = result.correlation_report
+        assert report is not None
+        assert report.n_strategies == 3
+        assert len(report.correlation_matrix) == 3

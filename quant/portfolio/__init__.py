@@ -52,6 +52,12 @@ from quant.portfolio.pre_trade import (
     TradeAdjustment,
 )
 from quant.portfolio.rebalancer import RebalanceEngine, RebalanceResult, Trade
+from quant.portfolio.strategy_correlation import (
+    CrowdingAlert,
+    StrategyCorrelationConfig,
+    StrategyCorrelationMonitor,
+    StrategyCorrelationReport,
+)
 from quant.portfolio.strategy_ranking import (
     RankingConfig,
     RankingResult,
@@ -121,6 +127,11 @@ __all__ = [
     "RebalanceEngine",
     "RebalanceResult",
     "Trade",
+    # Strategy correlation
+    "CrowdingAlert",
+    "StrategyCorrelationConfig",
+    "StrategyCorrelationMonitor",
+    "StrategyCorrelationReport",
     # Strategy ranking
     "RankingConfig",
     "RankingResult",

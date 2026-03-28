@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from quant.portfolio.lifecycle import HealthStatus, LifecycleReport
+from quant.portfolio.strategy_correlation import StrategyCorrelationReport
 from quant.risk.reporting import RiskReport
 
 
@@ -66,6 +67,14 @@ class CIODashboard:
     hhi: float | None = None
     effective_n: float | None = None
 
+    # Strategy correlation
+    avg_strategy_corr: float | None = None
+    max_strategy_corr: float | None = None
+    max_corr_pair: tuple[str, str] = ("", "")
+    effective_strategies: float | None = None
+    correlation_level: str = ""
+    n_crowding_alerts: int = 0
+
     # Stress
     worst_stress_name: str = ""
     worst_stress_pnl: float = 0.0
@@ -81,6 +90,7 @@ class CIODashboard:
         """
         lifecycle: LifecycleReport | None = getattr(result, "lifecycle_report", None)
         risk: RiskReport | None = getattr(result, "risk_report", None)
+        corr: StrategyCorrelationReport | None = getattr(result, "correlation_report", None)
 
         # Strategy lines from lifecycle
         strategy_lines: list[StrategyLine] = []
@@ -132,6 +142,22 @@ class CIODashboard:
                 worst_pnl = worst.portfolio_pnl
                 worst_ret = worst.portfolio_return
 
+        # Strategy correlation
+        avg_strat_corr = None
+        max_strat_corr = None
+        max_corr_pair: tuple[str, str] = ("", "")
+        eff_strats = None
+        corr_level = ""
+        n_crowding = 0
+
+        if corr is not None:
+            avg_strat_corr = corr.avg_pairwise_corr
+            max_strat_corr = corr.max_pairwise_corr
+            max_corr_pair = corr.max_corr_pair
+            eff_strats = corr.effective_strategies
+            corr_level = corr.level
+            n_crowding = len(corr.crowding_alerts)
+
         sleeve_results = getattr(result, "sleeve_results", [])
 
         return cls(
@@ -155,6 +181,12 @@ class CIODashboard:
             max_drawdown=mdd,
             hhi=hhi,
             effective_n=eff_n,
+            avg_strategy_corr=avg_strat_corr,
+            max_strategy_corr=max_strat_corr,
+            max_corr_pair=max_corr_pair,
+            effective_strategies=eff_strats,
+            correlation_level=corr_level,
+            n_crowding_alerts=n_crowding,
             worst_stress_name=worst_name,
             worst_stress_pnl=worst_pnl,
             worst_stress_return=worst_ret,
@@ -217,6 +249,26 @@ class CIODashboard:
                 lines.append(f"  HHI              : {self.hhi:.4f}")
             if self.effective_n is not None:
                 lines.append(f"  Effective N      : {self.effective_n:.1f}")
+
+        # Strategy correlation
+        if self.avg_strategy_corr is not None:
+            lines.append("")
+            lines.append("── Strategy Correlation ─────────────────────────")
+            lines.append(f"  Avg pairwise     : {self.avg_strategy_corr:.4f}")
+            if self.max_strategy_corr is not None:
+                lines.append(f"  Max pairwise     : {self.max_strategy_corr:.4f}")
+            if self.max_corr_pair[0]:
+                lines.append(
+                    f"  Most correlated  : {self.max_corr_pair[0]} / {self.max_corr_pair[1]}"
+                )
+            if self.effective_strategies is not None:
+                lines.append(f"  Effective N      : {self.effective_strategies:.1f}")
+            if self.correlation_level:
+                lines.append(f"  Level            : {self.correlation_level.upper()}")
+            if self.n_crowding_alerts > 0:
+                lines.append(
+                    f"  Crowding alerts  : {self.n_crowding_alerts}"
+                )
 
         # Worst stress scenario
         if self.worst_stress_name:

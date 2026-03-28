@@ -10,6 +10,10 @@ from quant.portfolio.lifecycle import (
     Recommendation,
     StrategyHealth,
 )
+from quant.portfolio.strategy_correlation import (
+    CrowdingAlert,
+    StrategyCorrelationReport,
+)
 from quant.risk.reporting import (
     ConcentrationMetrics,
     RiskReport,
@@ -91,6 +95,24 @@ def _make_risk_report() -> RiskReport:
     )
 
 
+def _make_correlation_report() -> StrategyCorrelationReport:
+    return StrategyCorrelationReport(
+        timestamp=datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc),
+        n_strategies=2,
+        avg_pairwise_corr=0.45,
+        max_pairwise_corr=0.45,
+        max_corr_pair=("momentum", "mean_rev"),
+        effective_strategies=1.8,
+        correlation_matrix={
+            "momentum": {"momentum": 1.0, "mean_rev": 0.45},
+            "mean_rev": {"momentum": 0.45, "mean_rev": 1.0},
+        },
+        crowding_alerts=[],
+        level="normal",
+        n_observations=63,
+    )
+
+
 class _FakeResult:
     """Stub OrchestratorResult for testing."""
 
@@ -98,6 +120,7 @@ class _FakeResult:
         self,
         lifecycle_report=None,
         risk_report=None,
+        correlation_report=None,
         circuit_breaker_tripped=False,
     ):
         self.timestamp = datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)
@@ -108,6 +131,7 @@ class _FakeResult:
         self.circuit_breaker_tripped = circuit_breaker_tripped
         self.lifecycle_report = lifecycle_report
         self.risk_report = risk_report
+        self.correlation_report = correlation_report
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────
@@ -208,3 +232,68 @@ class TestCIODashboardRender:
         text = dash.render()
         assert "CIO Dashboard" in text
         assert len(text) > 50
+
+    def test_render_correlation_section(self):
+        result = _FakeResult(correlation_report=_make_correlation_report())
+        dash = CIODashboard.from_orchestrator_result(result)
+        text = dash.render()
+        assert "Strategy Correlation" in text
+        assert "NORMAL" in text
+
+
+class TestCIODashboardCorrelation:
+    def test_correlation_metrics_populated(self):
+        result = _FakeResult(correlation_report=_make_correlation_report())
+        dash = CIODashboard.from_orchestrator_result(result)
+        assert dash.avg_strategy_corr is not None
+        assert abs(dash.avg_strategy_corr - 0.45) < 1e-6
+        assert dash.max_strategy_corr is not None
+        assert dash.effective_strategies is not None
+        assert abs(dash.effective_strategies - 1.8) < 1e-6
+
+    def test_correlation_level_populated(self):
+        result = _FakeResult(correlation_report=_make_correlation_report())
+        dash = CIODashboard.from_orchestrator_result(result)
+        assert dash.correlation_level == "normal"
+
+    def test_max_corr_pair(self):
+        result = _FakeResult(correlation_report=_make_correlation_report())
+        dash = CIODashboard.from_orchestrator_result(result)
+        assert dash.max_corr_pair == ("momentum", "mean_rev")
+
+    def test_crowding_alerts_count(self):
+        result = _FakeResult(correlation_report=_make_correlation_report())
+        dash = CIODashboard.from_orchestrator_result(result)
+        assert dash.n_crowding_alerts == 0
+
+    def test_correlation_none_when_not_provided(self):
+        result = _FakeResult()
+        dash = CIODashboard.from_orchestrator_result(result)
+        assert dash.avg_strategy_corr is None
+        assert dash.effective_strategies is None
+        assert dash.correlation_level == ""
+
+    def test_render_with_crowding_alerts(self):
+        report = StrategyCorrelationReport(
+            timestamp=datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc),
+            n_strategies=2,
+            avg_pairwise_corr=0.85,
+            max_pairwise_corr=0.85,
+            max_corr_pair=("momentum", "trend"),
+            effective_strategies=1.1,
+            crowding_alerts=[
+                CrowdingAlert(
+                    strategy_a="momentum",
+                    strategy_b="trend",
+                    correlation=0.85,
+                    message="momentum / trend corr=0.850 >= threshold 0.80",
+                ),
+            ],
+            level="critical",
+            n_observations=63,
+        )
+        result = _FakeResult(correlation_report=report)
+        dash = CIODashboard.from_orchestrator_result(result)
+        text = dash.render()
+        assert "CRITICAL" in text
+        assert "Crowding alerts" in text
