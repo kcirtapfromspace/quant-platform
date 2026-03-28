@@ -176,6 +176,9 @@ class MultiRebalanceSnapshot:
     turnover: float
     transaction_costs: float
     n_assets: int
+    spread_costs: float = 0.0
+    impact_costs: float = 0.0
+    commission_costs: float = 0.0
     lifecycle_report: LifecycleReport | None = None
     correlation_report: StrategyCorrelationReport | None = None
     regime_state: RegimeState | None = None
@@ -227,6 +230,11 @@ class MultiStrategyBacktestReport:
     n_circuit_breaker_trips: int = 0
     circuit_breaker_days: int = 0
 
+    # Cost decomposition (populated when cost_model is used)
+    total_spread_costs: float = 0.0
+    total_impact_costs: float = 0.0
+    total_commission_costs: float = 0.0
+
     def summary(self) -> str:
         """Return a human-readable summary."""
         lines = [
@@ -247,6 +255,12 @@ class MultiStrategyBacktestReport:
             f"Avg turnover            : {self.avg_turnover:.2%}",
             f"Total costs             : ${self.total_costs:,.0f}",
         ]
+        if self.total_spread_costs + self.total_impact_costs + self.total_commission_costs > 0:
+            lines.extend([
+                f"  Spread costs          : ${self.total_spread_costs:,.0f}",
+                f"  Impact costs          : ${self.total_impact_costs:,.0f}",
+                f"  Commission costs      : ${self.total_commission_costs:,.0f}",
+            ])
         return "\n".join(lines)
 
 
@@ -352,6 +366,9 @@ class MultiStrategyBacktestEngine:
         cb_trip_count = 0
         cb_active_days = 0
         cb_was_active = False
+        agg_spread = 0.0
+        agg_impact = 0.0
+        agg_commission = 0.0
 
         for i in range(n_days):
             dt = dates[i]
@@ -509,14 +526,23 @@ class MultiStrategyBacktestEngine:
                         abs(combined.get(s, 0.0) - weights.get(s, 0.0))
                         for s in all_syms
                     )
+                    spread_cost = 0.0
+                    impact_cost = 0.0
+                    commission_cost = 0.0
                     if config.cost_model is not None:
-                        costs = self._estimate_rebalance_cost(
-                            config.cost_model, combined, weights, portfolio_value
+                        costs, spread_cost, impact_cost, commission_cost = (
+                            self._estimate_rebalance_cost(
+                                config.cost_model, combined, weights,
+                                portfolio_value,
+                            )
                         )
                     else:
                         costs = turnover * portfolio_value * commission_rate
                     portfolio_value -= costs
                     total_costs += costs
+                    agg_spread += spread_cost
+                    agg_impact += impact_cost
+                    agg_commission += commission_cost
 
                     # ── 2d. Lifecycle evaluation ───────────────────────
                     lifecycle_report: LifecycleReport | None = None
@@ -577,6 +603,9 @@ class MultiStrategyBacktestEngine:
                             turnover=turnover,
                             transaction_costs=costs,
                             n_assets=sum(1 for v in combined.values() if abs(v) > 1e-9),
+                            spread_costs=spread_cost,
+                            impact_costs=impact_cost,
+                            commission_costs=commission_cost,
                             lifecycle_report=lifecycle_report,
                             correlation_report=correlation_report,
                             regime_state=regime_state,
@@ -676,6 +705,9 @@ class MultiStrategyBacktestEngine:
             n_regime_changes=n_regime_changes,
             n_circuit_breaker_trips=cb_trip_count,
             circuit_breaker_days=cb_active_days,
+            total_spread_costs=agg_spread,
+            total_impact_costs=agg_impact,
+            total_commission_costs=agg_commission,
         )
 
         logger.info(
@@ -808,9 +840,15 @@ class MultiStrategyBacktestEngine:
         new_weights: dict[str, float],
         old_weights: dict[str, float],
         portfolio_value: float,
-    ) -> float:
-        """Estimate total dollar cost of a rebalance."""
+    ) -> tuple[float, float, float, float]:
+        """Estimate rebalance cost with decomposition.
+
+        Returns (total_dollars, spread_dollars, impact_dollars, commission_dollars).
+        """
         total_cost = 0.0
+        spread_total = 0.0
+        impact_total = 0.0
+        commission_total = 0.0
         for sym in set(new_weights) | set(old_weights):
             dw = abs(new_weights.get(sym, 0.0) - old_weights.get(sym, 0.0))
             if dw < 1e-10:
@@ -818,7 +856,10 @@ class MultiStrategyBacktestEngine:
             notional = dw * portfolio_value
             est = cost_model.estimate_order_cost(symbol=sym, notional=notional)
             total_cost += est.total_dollars
-        return total_cost
+            spread_total += notional * est.spread_bps / 10_000
+            impact_total += notional * est.impact_bps / 10_000
+            commission_total += notional * est.commission_bps / 10_000
+        return total_cost, spread_total, impact_total, commission_total
 
     @staticmethod
     def _validate(returns: pd.DataFrame) -> pd.DataFrame:

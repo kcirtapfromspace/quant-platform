@@ -13,6 +13,7 @@ from quant.backtest.multi_strategy import (
     MultiStrategyConfig,
     SleeveConfig,
 )
+from quant.execution.cost_model import CostModelConfig, TransactionCostModel
 from quant.portfolio.constraints import PortfolioConstraints
 from quant.portfolio.engine import PortfolioConfig
 from quant.portfolio.lifecycle import LifecycleConfig
@@ -600,3 +601,88 @@ class TestMultiStrategyCircuitBreaker:
         # Should produce valid results with all three features
         assert report.n_trading_days == 300
         assert report.n_circuit_breaker_trips >= 1
+
+
+# ── Cost decomposition tests (QUA-76) ────────────────────────────────────
+
+
+def _make_cost_model() -> TransactionCostModel:
+    return TransactionCostModel(
+        CostModelConfig(
+            default_spread_bps=5.0,
+            impact_coefficient=0.1,
+            commission_pct=0.0001,
+        )
+    )
+
+
+class TestCostDecomposition:
+    def test_decomposition_populated_with_cost_model(self):
+        config = _make_config()
+        config.cost_model = _make_cost_model()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert report.total_spread_costs > 0
+        # Impact may be 0 if no ADV is provided (no impact calc)
+        assert report.total_spread_costs >= 0
+        assert report.total_impact_costs >= 0
+        assert report.total_commission_costs >= 0
+
+    def test_decomposition_sums_to_total(self):
+        config = _make_config()
+        config.cost_model = _make_cost_model()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        decomp_sum = (
+            report.total_spread_costs
+            + report.total_impact_costs
+            + report.total_commission_costs
+        )
+        assert abs(decomp_sum - report.total_costs) < 1.0  # <$1 rounding
+
+    def test_decomposition_zero_without_cost_model(self):
+        config = _make_config()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        assert report.total_spread_costs == 0.0
+        assert report.total_impact_costs == 0.0
+        assert report.total_commission_costs == 0.0
+
+    def test_per_rebalance_decomposition(self):
+        config = _make_config()
+        config.cost_model = _make_cost_model()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        for snap in report.rebalances:
+            assert snap.spread_costs >= 0
+            assert snap.impact_costs >= 0
+            assert snap.commission_costs >= 0
+
+    def test_per_rebalance_sums_match_aggregate(self):
+        config = _make_config()
+        config.cost_model = _make_cost_model()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        total_spread = sum(s.spread_costs for s in report.rebalances)
+        total_impact = sum(s.impact_costs for s in report.rebalances)
+        total_commission = sum(s.commission_costs for s in report.rebalances)
+        assert abs(total_spread - report.total_spread_costs) < 0.01
+        assert abs(total_impact - report.total_impact_costs) < 0.01
+        assert abs(total_commission - report.total_commission_costs) < 0.01
+
+    def test_summary_shows_decomposition(self):
+        config = _make_config()
+        config.cost_model = _make_cost_model()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        summary = report.summary()
+        assert "Spread costs" in summary
+        assert "Impact costs" in summary
+        assert "Commission costs" in summary
+
+    def test_summary_hides_decomposition_without_model(self):
+        config = _make_config()
+        engine = MultiStrategyBacktestEngine()
+        report = engine.run(_make_returns(), config)
+        summary = report.summary()
+        assert "Spread costs" not in summary
