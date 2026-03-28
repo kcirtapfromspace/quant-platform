@@ -59,6 +59,12 @@ from quant.portfolio.rebalance_trigger import (
     TriggerReason,
 )
 from quant.portfolio.rebalancer import RebalanceEngine, RebalanceResult, Trade
+from quant.portfolio.scenario_analyzer import (
+    ScenarioAnalyzer,
+    ScenarioConfig,
+    ScenarioResult,
+    ShockResult,
+)
 from quant.portfolio.strategy_correlation import (
     CrowdingAlert,
     StrategyCorrelationConfig,
@@ -140,6 +146,11 @@ __all__ = [
     "RebalanceEngine",
     "RebalanceResult",
     "Trade",
+    # Scenario analyzer
+    "ScenarioAnalyzer",
+    "ScenarioConfig",
+    "ScenarioResult",
+    "ShockResult",
     # Strategy correlation
     "CrowdingAlert",
     "StrategyCorrelationConfig",
