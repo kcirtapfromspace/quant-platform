@@ -6,6 +6,18 @@ from quant.risk.correlation import (
     CorrelationRiskCheck,
     CorrelationState,
 )
+from quant.risk.covariance import (
+    CovarianceConfig,
+    CovarianceEstimator,
+    CovarianceResult,
+    EstimationMethod,
+)
+from quant.risk.drawdown_scaler import (
+    DrawdownScaler,
+    DrawdownScalerConfig,
+    ScaledWeights,
+    ScalerState,
+)
 from quant.risk.engine import RiskCheckResult, RiskConfig, RiskEngine
 from quant.risk.limit_checker import (
     BreachSeverity,
@@ -15,12 +27,6 @@ from quant.risk.limit_checker import (
     RiskLimitChecker,
 )
 from quant.risk.limits import ExposureLimits
-from quant.risk.drawdown_scaler import (
-    DrawdownScaler,
-    DrawdownScalerConfig,
-    ScaledWeights,
-    ScalerState,
-)
 from quant.risk.reporting import RiskReport, RiskReporter, StressScenario
 from quant.risk.risk_decomposition import (
     DecompositionConfig,
@@ -42,11 +48,15 @@ __all__ = [
     "CorrelationMonitor",
     "CorrelationRiskCheck",
     "CorrelationState",
+    "CovarianceConfig",
+    "CovarianceEstimator",
+    "CovarianceResult",
     "DecompositionConfig",
     "DrawdownCircuitBreaker",
     "DrawdownScaler",
     "DrawdownScalerConfig",
     "BreachSeverity",
+    "EstimationMethod",
     "ExposureLimits",
     "FactorRiskContrib",
     "HealthLevel",
