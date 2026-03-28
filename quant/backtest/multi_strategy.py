@@ -68,7 +68,12 @@ from quant.portfolio.strategy_correlation import (
     StrategyCorrelationReport,
 )
 from quant.risk.circuit_breaker import DrawdownCircuitBreaker
-from quant.signals.adaptive_combiner import AdaptiveCombinerConfig, AdaptiveSignalCombiner
+from quant.signals.adaptive_combiner import (
+    AdaptiveCombinerConfig,
+    AdaptiveSignalCombiner,
+    BayesianAdaptiveCombinerConfig,
+    BayesianAdaptiveSignalCombiner,
+)
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.regime import RegimeConfig, RegimeDetector, RegimeState, RegimeWeightAdapter
 
@@ -333,9 +338,14 @@ class MultiStrategyBacktestEngine:
                 weights=sc.signal_weights,
             )
             if sc.adaptive_combiner_config is not None:
-                sleeve_adaptive[sc.name] = AdaptiveSignalCombiner(
-                    sc.adaptive_combiner_config
-                )
+                if isinstance(sc.adaptive_combiner_config, BayesianAdaptiveCombinerConfig):
+                    sleeve_adaptive[sc.name] = BayesianAdaptiveSignalCombiner(
+                        sc.adaptive_combiner_config
+                    )
+                else:
+                    sleeve_adaptive[sc.name] = AdaptiveSignalCombiner(
+                        sc.adaptive_combiner_config
+                    )
             sleeve_engines[sc.name] = PortfolioEngine(sc.portfolio_config)
 
         # Lifecycle manager

@@ -426,6 +426,183 @@ class AdaptiveSignalCombiner:
 
 
 # ---------------------------------------------------------------------------
+# Bayesian IC estimator — Normal-Gamma conjugate posterior
+# ---------------------------------------------------------------------------
+
+
+class _NormalGammaTracker:
+    """O(1) Normal-Gamma conjugate posterior for online IC estimation.
+
+    Hyperpriors: mu0=0, kappa0=1, alpha0=2, beta0=1 (weakly informative,
+    centred on zero IC).  Posterior mean converges to sample mean as n→∞.
+    Prior shrinks early estimates toward zero, reducing whipsaw during
+    combiner warmup compared to EWM.
+    """
+
+    __slots__ = ("mu_n", "kappa_n", "alpha_n", "beta_n", "n")
+
+    def __init__(self) -> None:
+        self.mu_n: float = 0.0
+        self.kappa_n: float = 1.0
+        self.alpha_n: float = 2.0
+        self.beta_n: float = 1.0
+        self.n: int = 0
+
+    def update(self, x: float) -> None:
+        kappa_prev = self.kappa_n
+        mu_prev = self.mu_n
+        self.kappa_n = kappa_prev + 1.0
+        self.mu_n = (kappa_prev * mu_prev + x) / self.kappa_n
+        self.alpha_n += 0.5
+        residual = x - mu_prev
+        self.beta_n += kappa_prev * residual * residual / (2.0 * self.kappa_n)
+        self.n += 1
+
+    @property
+    def posterior_mean(self) -> float:
+        return self.mu_n
+
+
+# ---------------------------------------------------------------------------
+# Bayesian config and combiner
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BayesianAdaptiveCombinerConfig(AdaptiveCombinerConfig):
+    """AdaptiveCombinerConfig variant that selects Bayesian IC weighting.
+
+    Uses Normal-Gamma conjugate posterior mean as the IC estimate instead
+    of EWM mean.  The prior (mu0=0) provides automatic shrinkage toward
+    zero IC during the warmup period, reducing false-positive weight
+    concentration before sufficient data has accumulated.
+
+    All other parameters (ic_lookback, min_ic_periods, shrinkage, etc.)
+    are inherited from AdaptiveCombinerConfig and have the same effect.
+    """
+
+
+class BayesianAdaptiveSignalCombiner(AdaptiveSignalCombiner):
+    """AdaptiveSignalCombiner that uses Normal-Gamma posterior IC estimation.
+
+    Replaces the EWM IC mean with the Normal-Gamma posterior mean.
+    The posterior mean is a Bayesian shrinkage estimator: with few
+    observations it stays close to zero (the prior), and with many
+    observations it converges to the sample mean.
+
+    Interface is identical to AdaptiveSignalCombiner; swap in by passing
+    BayesianAdaptiveCombinerConfig to SleeveConfig.adaptive_combiner_config.
+    """
+
+    def __init__(
+        self, config: BayesianAdaptiveCombinerConfig | None = None
+    ) -> None:
+        super().__init__(config or BayesianAdaptiveCombinerConfig())
+        self._ng_trackers: dict[str, _NormalGammaTracker] = {}
+
+    def update(
+        self,
+        signal_scores: dict[str, pd.Series],
+        asset_returns: pd.Series,
+        timestamp: datetime,
+    ) -> dict[str, float]:
+        """Record IC and update Normal-Gamma trackers per signal."""
+        ics = super().update(signal_scores, asset_returns, timestamp)
+        for name, ic in ics.items():
+            if name not in self._ng_trackers:
+                self._ng_trackers[name] = _NormalGammaTracker()
+            self._ng_trackers[name].update(ic)
+        return ics
+
+    def get_weights(
+        self, signal_names: list[str] | None = None
+    ) -> AdaptiveWeights:
+        """Compute adaptive weights using Normal-Gamma posterior IC means."""
+        if signal_names is None:
+            signal_names = list(self._ic_history.keys())
+
+        if not signal_names:
+            return AdaptiveWeights(
+                weights={},
+                ic_stats={},
+                method_used="equal_fallback",
+                n_signals=0,
+            )
+
+        has_enough = any(
+            len(self._ic_history.get(n, [])) >= self._config.min_ic_periods
+            for n in signal_names
+        )
+
+        if not has_enough:
+            w = 1.0 / len(signal_names)
+            return AdaptiveWeights(
+                weights=dict.fromkeys(signal_names, w),
+                ic_stats=dict.fromkeys(signal_names, 0.0),
+                method_used="equal_fallback",
+                n_signals=len(signal_names),
+            )
+
+        # Use NormalGamma posterior means instead of EWM
+        ic_means: dict[str, float] = {}
+        for name in signal_names:
+            tracker = self._ng_trackers.get(name)
+            if tracker is None or tracker.n < self._config.min_ic_periods:
+                ic_means[name] = 0.0
+            else:
+                ic_means[name] = tracker.posterior_mean
+
+        active = {n: ic for n, ic in ic_means.items() if ic >= self._config.min_ic}
+
+        if not active:
+            w = 1.0 / len(signal_names)
+            return AdaptiveWeights(
+                weights=dict.fromkeys(signal_names, w),
+                ic_stats=ic_means,
+                method_used="equal_fallback",
+                n_signals=len(signal_names),
+            )
+
+        raw_ic_weights: dict[str, float] = {
+            n: (active[n] if n in active and active[n] > 0 else 0.0)
+            for n in signal_names
+        }
+        total_ic = sum(raw_ic_weights.values())
+
+        if total_ic < 1e-12:
+            w = 1.0 / len(signal_names)
+            return AdaptiveWeights(
+                weights=dict.fromkeys(signal_names, w),
+                ic_stats=ic_means,
+                method_used="equal_fallback",
+                n_signals=len(signal_names),
+            )
+
+        ic_weights = {n: v / total_ic for n, v in raw_ic_weights.items()}
+        eq_w = 1.0 / len(signal_names)
+        shrink = self._config.shrinkage
+        final_weights = {
+            n: (1.0 - shrink) * ic_weights[n] + shrink * eq_w
+            for n in signal_names
+        }
+        total = sum(final_weights.values())
+        if total > 1e-12:
+            final_weights = {n: v / total for n, v in final_weights.items()}
+
+        n_active = sum(1 for v in final_weights.values() if v > 1e-8)
+        return AdaptiveWeights(
+            weights=final_weights,
+            ic_stats=ic_means,
+            method_used="bayesian_ng",
+            n_signals=n_active,
+        )
+
+    def reset(self) -> None:
+        super().reset()
+        self._ng_trackers.clear()
+
+
+# ---------------------------------------------------------------------------
 # Pure-numpy Spearman (shared with decay module)
 # ---------------------------------------------------------------------------
 
