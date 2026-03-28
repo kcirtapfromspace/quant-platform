@@ -27,6 +27,7 @@ from quant.risk.limit_checker import (
     RiskLimitChecker,
 )
 from quant.risk.limits import ExposureLimits
+from quant.risk.margin import MarginConfig, MarginManager, MarginStatus, PositionMargin
 from quant.risk.reporting import RiskReport, RiskReporter, StressScenario
 from quant.risk.risk_decomposition import (
     DecompositionConfig,
@@ -63,7 +64,11 @@ __all__ = [
     "LimitBreach",
     "LimitCheckReport",
     "LimitConfig",
+    "MarginConfig",
+    "MarginManager",
+    "MarginStatus",
     "MonitorConfig",
+    "PositionMargin",
     "PositionRisk",
     "PositionSizer",
     "RiskCheckResult",
