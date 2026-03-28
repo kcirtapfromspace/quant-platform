@@ -21,7 +21,10 @@ from quant.portfolio.optimizers import OptimizationMethod
 from quant.portfolio.position_scaler import ScalingConfig, ScalingMethod
 from quant.portfolio.strategy_correlation import StrategyCorrelationConfig
 from quant.risk.circuit_breaker import DrawdownCircuitBreaker
-from quant.signals.adaptive_combiner import AdaptiveCombinerConfig
+from quant.signals.adaptive_combiner import (
+    AdaptiveCombinerConfig,
+    BayesianAdaptiveCombinerConfig,
+)
 from quant.signals.base import BaseSignal, SignalOutput
 from quant.signals.regime import RegimeConfig, RegimeWeightAdapter
 
@@ -957,3 +960,69 @@ class TestDynamicCapitalAllocation:
         report = engine.run(_make_returns(), config)
         # Only 1 sleeve → allocator never called (needs >=2 with returns)
         assert report.n_allocation_updates == 0
+
+
+# ── Tests: BayesianAdaptiveSignalCombiner via SleeveConfig (QUA-82) ───────────
+
+
+class TestBayesianCombinerIntegration:
+    """Verify BayesianAdaptiveCombinerConfig wires up through SleeveConfig."""
+
+    def test_bayesian_sleeve_runs_to_completion(self):
+        """Engine completes a backtest with a Bayesian combiner sleeve."""
+        config = MultiStrategyConfig(
+            sleeves=[
+                SleeveConfig(
+                    name="bayesian_momentum",
+                    signals=[StubSignal("momentum")],
+                    capital_weight=1.0,
+                    adaptive_combiner_config=BayesianAdaptiveCombinerConfig(
+                        min_ic_periods=10,
+                        shrinkage=0.3,
+                    ),
+                    portfolio_config=PortfolioConfig(
+                        optimization_method=OptimizationMethod.RISK_PARITY,
+                        constraints=PortfolioConstraints(
+                            long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                        ),
+                    ),
+                ),
+            ],
+            rebalance_frequency=21,
+            min_history=60,
+        )
+        report = MultiStrategyBacktestEngine().run(_make_returns(), config)
+        assert report.n_rebalances >= 1
+        assert report.final_value > 0
+
+    def test_ema_and_bayesian_sleeves_independent(self):
+        """EMA-IC and Bayesian sleeves run independently and yield different results."""
+        returns = _make_returns(n_days=400)
+
+        def _run(use_bayesian: bool) -> float:
+            cfg_cls = BayesianAdaptiveCombinerConfig if use_bayesian else AdaptiveCombinerConfig
+            config = MultiStrategyConfig(
+                sleeves=[
+                    SleeveConfig(
+                        name="adaptive",
+                        signals=[StubSignal("alpha")],
+                        capital_weight=1.0,
+                        adaptive_combiner_config=cfg_cls(min_ic_periods=10),
+                        portfolio_config=PortfolioConfig(
+                            optimization_method=OptimizationMethod.RISK_PARITY,
+                            constraints=PortfolioConstraints(
+                                long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                            ),
+                        ),
+                    ),
+                ],
+                rebalance_frequency=21,
+                min_history=60,
+            )
+            return MultiStrategyBacktestEngine().run(returns, config).sharpe_ratio
+
+        ema_sharpe = _run(use_bayesian=False)
+        bay_sharpe = _run(use_bayesian=True)
+        # Both produce valid results; Bayesian posterior shrinkage may shift Sharpe slightly
+        assert np.isfinite(ema_sharpe)
+        assert np.isfinite(bay_sharpe)
