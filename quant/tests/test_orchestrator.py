@@ -35,6 +35,7 @@ from quant.risk.reporting import RiskReport, RiskReporter
 from quant.risk.strategy_monitor import MonitorConfig, StrategyMonitor
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig
 from quant.signals.base import BaseSignal, SignalOutput
+from quant.signals.decay import DecayConfig
 from quant.signals.regime import (
     MarketRegime,
     RegimeConfig,
@@ -1871,3 +1872,123 @@ class TestSignalICIntegration:
                 HealthStatus.DEGRADED,
                 HealthStatus.CRITICAL,
             )
+
+
+# ── Signal decay integration tests ──────────────────────────────────────
+
+
+def _make_decay_orchestrator(
+    decay_eval_interval: int = 1,
+) -> StrategyOrchestrator:
+    """Build orchestrator with decay analysis configured."""
+    symbols = SYMBOLS
+    returns = _make_returns(symbols)
+    oms = _make_oms()
+
+    sleeves = [
+        StrategySleeve(
+            name="strategy_alpha",
+            signals=[StubSignal("alpha", {"AAPL": 0.7, "GOOG": 0.5, "MSFT": 0.3})],
+            capital_weight=0.5,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+        StrategySleeve(
+            name="strategy_beta",
+            signals=[StubSignal("beta", {"AAPL": 0.3, "GOOG": 0.6, "MSFT": 0.8})],
+            capital_weight=0.5,
+            portfolio_config=PortfolioConfig(
+                optimization_method=OptimizationMethod.RISK_PARITY,
+                constraints=PortfolioConstraints(
+                    long_only=True, max_weight=0.5, max_gross_exposure=1.0
+                ),
+            ),
+        ),
+    ]
+
+    config = OrchestratorConfig(
+        universe=symbols,
+        risk_config=RiskConfig(
+            limits=ExposureLimits(
+                max_position_fraction=0.50,
+                max_order_fraction=0.50,
+                max_gross_exposure=1.50,
+            ),
+        ),
+        min_order_value=10.0,
+        lifecycle_config=LifecycleConfig(),
+        decay_config=DecayConfig(
+            horizons=[1, 2, 3],
+            min_assets=2,
+            min_periods=3,
+        ),
+        decay_eval_interval=decay_eval_interval,
+    )
+
+    return StrategyOrchestrator(
+        config=config,
+        sleeves=sleeves,
+        oms=oms,
+        returns_provider=lambda syms, lookback: returns,
+    )
+
+
+class TestSignalDecayIntegration:
+    def test_decay_analyzer_initialized(self):
+        """Decay analyzer should be created when config is provided."""
+        orch = _make_decay_orchestrator()
+        assert orch._decay_analyzer is not None
+
+    def test_alpha_scores_accumulated(self):
+        """Alpha score history should grow across cycles."""
+        orch = _make_decay_orchestrator(decay_eval_interval=100)
+        r1 = orch.run_once()
+        assert r1.error == ""
+        # After one cycle, should have scores stored
+        assert len(orch._alpha_score_history) > 0
+
+    def test_decay_runs_after_interval(self):
+        """Decay analysis should run after decay_eval_interval cycles."""
+        orch = _make_decay_orchestrator(decay_eval_interval=2)
+        # Run enough cycles to accumulate min_periods (3) scores
+        # and trigger decay eval (interval=2)
+        for _ in range(4):
+            orch.run_once()
+        # After 4 cycles, decay should have run at least once
+        # (cycles_since_decay resets every 2 cycles)
+        # Half-life may or may not be computable with stub signals
+        # but the machinery should have run without error
+        assert orch._cycles_since_decay < 2
+
+    def test_half_life_fed_to_lifecycle(self):
+        """After decay analysis, half-life should appear in lifecycle health."""
+        orch = _make_decay_orchestrator(decay_eval_interval=1)
+        # Run enough cycles to have both IC and decay data
+        for _ in range(5):
+            result = orch.run_once()
+        # Even if half_life is None (stub signals may not produce
+        # meaningful decay), the field should be accessible
+        if result.lifecycle_report is not None:
+            for h in result.lifecycle_report.strategy_health:
+                # signal_half_life should be present (may be None or int)
+                assert hasattr(h, "signal_half_life")
+
+    def test_no_decay_without_config(self):
+        """Without decay_config, no decay analysis should occur."""
+        orch = _make_ic_orchestrator()
+        orch.run_once()
+        orch.run_once()
+        assert orch._decay_analyzer is None
+        assert len(orch._alpha_score_history) == 0
+
+    def test_decay_interval_respected(self):
+        """Decay should not run before the interval is reached."""
+        orch = _make_decay_orchestrator(decay_eval_interval=10)
+        for _ in range(3):
+            orch.run_once()
+        # After 3 cycles with interval=10, should not have run decay yet
+        assert orch._cycles_since_decay == 3

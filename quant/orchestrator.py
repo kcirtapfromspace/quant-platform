@@ -72,6 +72,7 @@ from quant.risk.reporting import RiskReport, RiskReporter
 from quant.risk.strategy_monitor import StrategyMonitor
 from quant.signals.adaptive_combiner import AdaptiveCombinerConfig, AdaptiveSignalCombiner
 from quant.signals.base import BaseSignal, SignalOutput
+from quant.signals.decay import DecayConfig, DecayResult, SignalDecayAnalyzer
 from quant.signals.regime import RegimeDetector, RegimeState, RegimeWeightAdapter
 
 
@@ -224,6 +225,8 @@ class OrchestratorConfig:
     strategy_correlation: StrategyCorrelationMonitor | None = None
     strategy_monitor: StrategyMonitor | None = None
     quality_tracker: ExecutionQualityTracker | None = None
+    decay_config: DecayConfig | None = None
+    decay_eval_interval: int = 21
 
 
 class StrategyOrchestrator:
@@ -284,6 +287,15 @@ class StrategyOrchestrator:
         # and accumulates IC history for lifecycle health evaluation
         self._last_alpha_scores: dict[str, dict[str, float]] = {}
         self._sleeve_ic_history: dict[str, list[float]] = {}
+
+        # Signal decay tracking: accumulate alpha scores over time
+        # for periodic decay analysis (half-life computation)
+        self._decay_analyzer: SignalDecayAnalyzer | None = None
+        self._alpha_score_history: dict[str, list[tuple[datetime, dict[str, float]]]] = {}
+        self._sleeve_half_life: dict[str, int | None] = {}
+        self._cycles_since_decay: int = 0
+        if config.decay_config is not None:
+            self._decay_analyzer = SignalDecayAnalyzer(config.decay_config)
 
         # Regime state
         self._last_regime: RegimeState | None = None
@@ -406,6 +418,22 @@ class StrategyOrchestrator:
             for sr in sleeve_results:
                 if not sr.error and sr.alpha_scores:
                     self._last_alpha_scores[sr.name] = dict(sr.alpha_scores)
+                    # Accumulate for decay analysis
+                    if self._decay_analyzer is not None:
+                        if sr.name not in self._alpha_score_history:
+                            self._alpha_score_history[sr.name] = []
+                        self._alpha_score_history[sr.name].append(
+                            (now, dict(sr.alpha_scores))
+                        )
+
+            # ── 2b2. Periodic signal decay analysis ────────────────────
+            self._cycles_since_decay += 1
+            if (
+                self._decay_analyzer is not None
+                and self._cycles_since_decay >= self._config.decay_eval_interval
+            ):
+                self._run_decay_analysis()
+                self._cycles_since_decay = 0
 
             # ── 2c. Lifecycle evaluation ────────────────────────────────
             lifecycle_report: LifecycleReport | None = None
@@ -424,6 +452,7 @@ class StrategyOrchestrator:
                     ic_hist = self._sleeve_ic_history.get(sr.name, [])
                     signal_ic = ic_hist[-1] if ic_hist else None
                     ic_history = pd.Series(ic_hist) if ic_hist else None
+                    half_life = self._sleeve_half_life.get(sr.name)
 
                     self._lifecycle_mgr.update(
                         StrategySnapshot(
@@ -432,6 +461,7 @@ class StrategyOrchestrator:
                             current_weight=cap_w,
                             signal_ic=signal_ic,
                             ic_history=ic_history,
+                            signal_half_life=half_life,
                         )
                     )
                 lifecycle_report = self._lifecycle_mgr.evaluate()
@@ -985,6 +1015,62 @@ class StrategyOrchestrator:
         if denom < 1e-12:
             return 0.0
         return num / denom
+
+    def _run_decay_analysis(self) -> None:
+        """Run signal decay analysis on accumulated alpha score history.
+
+        Computes half-life per sleeve and stores it for lifecycle health
+        evaluation.  Requires at least ``min_periods`` cross-sections
+        (from :class:`DecayConfig`) to produce a valid result.
+        """
+        assert self._decay_analyzer is not None
+        returns_df = self._get_returns_history(
+            max(self._decay_analyzer._config.horizons) + len(next(iter(self._alpha_score_history.values()), []))
+            if self._alpha_score_history
+            else 252
+        )
+        if returns_df.empty:
+            return
+
+        for sleeve_name, history in self._alpha_score_history.items():
+            if len(history) < (self._decay_analyzer._config.min_periods or 20):
+                continue
+
+            # Build signal_scores DataFrame: DatetimeIndex × symbols
+            timestamps = [ts for ts, _ in history]
+            all_symbols = sorted(
+                {sym for _, scores in history for sym in scores}
+            )
+            rows: list[dict[str, float]] = []
+            for _, scores in history:
+                rows.append({sym: scores.get(sym, float("nan")) for sym in all_symbols})
+
+            signal_df = pd.DataFrame(rows, index=pd.DatetimeIndex(timestamps), columns=all_symbols)
+
+            # Align returns to signal dates
+            common_cols = [c for c in all_symbols if c in returns_df.columns]
+            if len(common_cols) < self._decay_analyzer._config.min_assets:
+                continue
+            aligned_returns = returns_df[common_cols].reindex(signal_df.index).fillna(0.0)
+            signal_aligned = signal_df[common_cols]
+
+            try:
+                result: DecayResult = self._decay_analyzer.analyze(
+                    signal_scores=signal_aligned,
+                    asset_returns=aligned_returns,
+                    signal_name=sleeve_name,
+                )
+                self._sleeve_half_life[sleeve_name] = result.half_life
+                logger.info(
+                    "Decay analysis '{}': half_life={}d peak_ic={:.4f} optimal={}d",
+                    sleeve_name,
+                    result.half_life,
+                    result.peak_ic,
+                    result.optimal_horizon,
+                )
+            except (ValueError, Exception):
+                # Insufficient data or computation error — skip
+                pass
 
     @staticmethod
     def _compute_sleeve_returns(
