@@ -1,0 +1,131 @@
+name: Docker Build (ARM64)
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "quant-rs/**"
+      - ".github/workflows/docker-build.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "quant-rs/**"
+  workflow_dispatch:
+    inputs:
+      push_local:
+        description: "Push to local cluster registry (requires self-hosted runner)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/quant-rs
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build quant-rs ARM64 image and push to ghcr.io
+  # Uses QEMU for cross-compilation on GitHub-hosted runners.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ARM64 image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (ARM64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push (standard image)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./quant-rs
+          file: ./quant-rs/Dockerfile
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # BuildKit inline cache — speeds up repeated builds via registry cache
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache,mode=max
+
+      - name: Build GPU image (build-check only, not pushed automatically)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./quant-rs
+          file: ./quant-rs/Dockerfile.gpu
+          platforms: linux/arm64
+          # GPU image is never auto-pushed — requires explicit manual push
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-r36.4.0
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-cache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-cache,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Push to the local Turing Pi cluster registry.
+  # Runs only on self-hosted ARM64 runners with access to mirror.registry:5000.
+  # Triggered on main-branch pushes when that runner is available.
+  # ---------------------------------------------------------------------------
+  push-local:
+    name: Push to local registry
+    needs: build
+    # Self-hosted ARM64 runner label — adjust to match your runner configuration
+    runs-on: [self-hosted, linux, arm64]
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
+    # Skip rather than fail if no self-hosted runner is available
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push to local registry (native ARM64, no QEMU needed)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./quant-rs
+          file: ./quant-rs/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            mirror.registry:5000/quant-rs:latest
+            mirror.registry:5000/quant-rs:sha-${{ github.sha }}
+          # Pull cache from ghcr.io so local builds stay fast
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache

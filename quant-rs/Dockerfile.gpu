@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1
+#
+# GPU variant of quant-rs for Jetson Orin Nano nodes on the Turing Pi cluster.
+# Base: dustynv/l4t-jetpack r36.4.0 — Ubuntu 22.04 ARM64 with JetPack/CUDA libs.
+#
+# IMPORTANT: Host NVIDIA/CUDA libs must be mounted at runtime via the cluster's
+# GPU device-plugin (nvidia.com/gpu resource). The image itself stays lean.
+#
+# Build:
+#   docker buildx build --platform linux/arm64 -f Dockerfile.gpu -t quant-rs:gpu-r36.4.0 .
+#
+# Push to local registry:
+#   docker buildx build --platform linux/arm64 -f Dockerfile.gpu \
+#     -t mirror.registry:5000/quant-rs:gpu-r36.4.0 --push .
+
+# ── Stage 0: cargo-chef base ──────────────────────────────────────────────────
+# We re-use the same build toolchain as the standard Dockerfile.
+FROM --platform=linux/arm64 rust:1.93.1-slim-bookworm AS chef
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    g++ \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cargo install cargo-chef --locked
+
+WORKDIR /build
+
+# ── Stage 1: Planner ─────────────────────────────────────────────────────────
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 2: Cook + build ─────────────────────────────────────────────────────
+FROM chef AS builder
+
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+COPY . .
+RUN cargo build --release -p quant-cli
+
+# ── Stage 3: Jetson runtime ───────────────────────────────────────────────────
+# dustynv/l4t-jetpack r36.4.0 → Ubuntu 22.04, JetPack 6.x, CUDA 12.6
+# The image ships CUDA runtime and cuDNN; GPU access is via host-mounted libs
+# provided by the NVIDIA device plugin in the cluster.
+FROM --platform=linux/arm64 dustynv/l4t-jetpack:r36.4.0 AS runtime
+
+# Minimal extra deps on top of the Jetson base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user
+RUN groupadd -r quant && useradd -r -g quant quant
+
+COPY --from=builder /build/target/release/quant /usr/local/bin/quant
+
+# GPU resource hints for Kubernetes scheduler
+# (actual resource requests go in the k8s PodSpec, not here)
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+USER quant
+
+ENTRYPOINT ["/usr/local/bin/quant"]
+CMD ["--help"]

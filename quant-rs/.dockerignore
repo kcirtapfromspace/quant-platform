@@ -1,0 +1,17 @@
+# Exclude build artifacts — the Docker builder rebuilds from source
+target/
+
+# Exclude development files not needed in the image build context
+.git
+.github
+*.md
+
+# Exclude local env/config files
+.env
+*.local
+
+# Exclude IDE/editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
