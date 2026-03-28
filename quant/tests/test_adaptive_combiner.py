@@ -1,4 +1,4 @@
-"""Tests for adaptive IC-weighted signal combination (QUA-50)."""
+"""Tests for adaptive IC-weighted signal combination (QUA-50, QUA-68)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -10,6 +10,9 @@ from quant.signals.adaptive_combiner import (
     AdaptiveCombinerConfig,
     AdaptiveSignalCombiner,
     AdaptiveWeights,
+    BayesianAdaptiveCombinerConfig,
+    BayesianAdaptiveSignalCombiner,
+    _NormalGammaTracker,
 )
 from quant.signals.base import SignalOutput
 
@@ -474,3 +477,162 @@ class TestEWMMean:
         combiner = AdaptiveSignalCombiner()
         result = combiner._ewm_mean(np.array([]))
         assert result == 0.0
+
+
+# ── Tests: _NormalGammaTracker ────────────────────────────────────────────
+
+
+class TestNormalGammaTracker:
+    def test_initial_state(self):
+        t = _NormalGammaTracker()
+        assert t.mu_n == 0.0
+        assert t.kappa_n == 1.0
+        assert t.alpha_n == 2.0
+        assert t.beta_n == 1.0
+        assert t.n == 0
+
+    def test_n_increments(self):
+        t = _NormalGammaTracker()
+        for i in range(5):
+            t.update(float(i))
+        assert t.n == 5
+
+    def test_prior_shrinkage_single_update(self):
+        """After one update of 0.8, posterior mean is 0.4 (prior pulls toward 0)."""
+        t = _NormalGammaTracker()
+        t.update(0.8)
+        # kappa_prev=1, mu_prev=0 → mu_n = (1*0 + 0.8) / 2 = 0.4
+        assert abs(t.posterior_mean - 0.4) < 1e-9
+
+    def test_prior_shrinkage_three_updates(self):
+        """After 3 updates of 0.8, posterior mean is 0.6 (converging to truth)."""
+        t = _NormalGammaTracker()
+        for _ in range(3):
+            t.update(0.8)
+        # Trace: 0 → 0.4 → 0.533 → 0.6
+        assert abs(t.posterior_mean - 0.6) < 1e-9
+
+    def test_posterior_mean_converges_to_sample_mean(self):
+        """With many observations, posterior mean approaches the sample mean."""
+        t = _NormalGammaTracker()
+        values = [0.5] * 200
+        for v in values:
+            t.update(v)
+        # With 200 updates, kappa=201, mu_n ≈ 200*0.5/201 ≈ 0.4975
+        # Should be within 1% of true mean
+        assert abs(t.posterior_mean - 0.5) < 0.01
+
+    def test_zero_input_stays_at_prior(self):
+        t = _NormalGammaTracker()
+        for _ in range(10):
+            t.update(0.0)
+        assert abs(t.posterior_mean) < 1e-9
+
+
+# ── Tests: BayesianAdaptiveCombinerConfig ────────────────────────────────
+
+
+class TestBayesianAdaptiveCombinerConfig:
+    def test_is_subclass_of_adaptive_config(self):
+        cfg = BayesianAdaptiveCombinerConfig()
+        assert isinstance(cfg, AdaptiveCombinerConfig)
+
+    def test_inherits_defaults(self):
+        cfg = BayesianAdaptiveCombinerConfig()
+        assert cfg.ic_lookback == 126
+        assert cfg.min_ic_periods == 20
+        assert cfg.shrinkage == 0.3
+
+    def test_custom_params_propagate(self):
+        cfg = BayesianAdaptiveCombinerConfig(min_ic_periods=10, shrinkage=0.1)
+        assert cfg.min_ic_periods == 10
+        assert cfg.shrinkage == 0.1
+
+
+# ── Tests: BayesianAdaptiveSignalCombiner ────────────────────────────────
+
+
+class TestBayesianAdaptiveSignalCombiner:
+    def test_default_construction(self):
+        combiner = BayesianAdaptiveSignalCombiner()
+        assert combiner._ng_trackers == {}
+
+    def test_equal_fallback_before_warmup(self):
+        combiner = BayesianAdaptiveSignalCombiner(
+            BayesianAdaptiveCombinerConfig(min_ic_periods=30)
+        )
+        scores, returns, timestamps = _make_predictive_data(n_obs=5)
+        _feed_combiner(combiner, "sig", scores, returns, timestamps)
+        aw = combiner.get_weights(["sig"])
+        assert aw.method_used == "equal_fallback"
+
+    def test_bayesian_ng_method_after_warmup(self):
+        combiner = BayesianAdaptiveSignalCombiner(
+            BayesianAdaptiveCombinerConfig(min_ic_periods=10)
+        )
+        scores, returns, timestamps = _make_predictive_data(n_obs=25)
+        _feed_combiner(combiner, "sig", scores, returns, timestamps)
+        aw = combiner.get_weights(["sig"])
+        assert aw.method_used == "bayesian_ng"
+
+    def test_weights_sum_to_one(self):
+        combiner = BayesianAdaptiveSignalCombiner(
+            BayesianAdaptiveCombinerConfig(min_ic_periods=10)
+        )
+        scores, returns, timestamps = _make_predictive_data(n_obs=30)
+        _feed_combiner(combiner, "sig_a", scores, returns, timestamps)
+        _feed_combiner(combiner, "sig_b", scores, returns, timestamps)
+        aw = combiner.get_weights(["sig_a", "sig_b"])
+        assert abs(sum(aw.weights.values()) - 1.0) < 1e-9
+
+    def test_good_signal_outweighs_noise(self):
+        combiner = BayesianAdaptiveSignalCombiner(
+            BayesianAdaptiveCombinerConfig(min_ic_periods=10, shrinkage=0.0)
+        )
+        scores, returns, timestamps = _make_predictive_data(n_obs=25)
+        _feed_combiner(combiner, "good", scores, returns, timestamps)
+        noise_s, noise_r, noise_t = _make_noise_data(n_obs=25)
+        _feed_combiner(combiner, "noise", noise_s, noise_r, noise_t)
+        aw = combiner.get_weights(["good", "noise"])
+        if aw.method_used == "bayesian_ng":
+            assert aw.weights["good"] > aw.weights["noise"]
+
+    def test_update_creates_ng_tracker(self):
+        combiner = BayesianAdaptiveSignalCombiner()
+        scores, returns, timestamps = _make_predictive_data(n_obs=1)
+        combiner.update({"momentum": scores[0]}, returns[0], timestamps[0])
+        assert "momentum" in combiner._ng_trackers
+
+    def test_reset_clears_ng_trackers_and_history(self):
+        combiner = BayesianAdaptiveSignalCombiner()
+        scores, returns, timestamps = _make_predictive_data(n_obs=5)
+        _feed_combiner(combiner, "sig", scores, returns, timestamps)
+        assert len(combiner._ng_trackers) == 1
+        combiner.reset()
+        assert len(combiner._ng_trackers) == 0
+        assert len(combiner.tracked_signals) == 0
+
+    def test_full_shrinkage_equals_equal_weight(self):
+        combiner = BayesianAdaptiveSignalCombiner(
+            BayesianAdaptiveCombinerConfig(shrinkage=1.0, min_ic_periods=10)
+        )
+        scores, returns, timestamps = _make_predictive_data(n_obs=30)
+        _feed_combiner(combiner, "a", scores, returns, timestamps)
+        noise_s, noise_r, noise_t = _make_noise_data(n_obs=30)
+        _feed_combiner(combiner, "b", noise_s, noise_r, noise_t)
+        aw = combiner.get_weights(["a", "b"])
+        assert abs(aw.weights["a"] - 0.5) < 1e-6
+        assert abs(aw.weights["b"] - 0.5) < 1e-6
+
+    def test_ng_posterior_is_conservative_vs_sample_mean_early(self):
+        """NG posterior mean < sample mean during warmup (prior shrinkage)."""
+        t = _NormalGammaTracker()
+        for _ in range(5):
+            t.update(0.8)
+        sample_mean = 0.8
+        # After 5 updates: kappa=6, mu_n = 5*0.8/6 ≈ 0.667
+        assert t.posterior_mean < sample_mean
+
+    def test_is_subclass_of_adaptive_combiner(self):
+        combiner = BayesianAdaptiveSignalCombiner()
+        assert isinstance(combiner, AdaptiveSignalCombiner)
