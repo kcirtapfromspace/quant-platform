@@ -1,0 +1,29 @@
+# VMServiceScrape — quant-server + run-e metrics (QUA-91)
+# Namespace: hypothesis-validation (co-located with the Service)
+# Scraped by vmagent via VictoriaMetrics Operator cluster-wide discovery.
+# Targets:
+#   port "http"          → quant-server Prometheus textfile (port 8000, path /metrics)
+#   port "run-e-metrics" → run-e daemon Prometheus client (port 8001, path /metrics)
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: quant-server
+  namespace: hypothesis-validation
+  labels:
+    app: quant-server
+spec:
+  selector:
+    matchLabels:
+      app: quant-server
+  namespaceSelector:
+    matchNames:
+      - hypothesis-validation
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+    - port: run-e-metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

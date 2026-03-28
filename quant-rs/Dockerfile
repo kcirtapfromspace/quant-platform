@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     pkg-config \
     libssl-dev \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN cargo install cargo-chef --locked

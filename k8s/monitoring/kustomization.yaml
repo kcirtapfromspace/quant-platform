@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # VMServiceScrape — tells vmagent to scrape quant-server + run-e metrics
+  # Applied in hypothesis-validation namespace; discovered cluster-wide by the operator.
+  - vmagent-scrape-quant.yaml
+  # Grafana dashboard ConfigMap — auto-discovered by grafana-sc-dashboard sidecar
+  # Applied in loki namespace (co-located with Grafana).
+  - grafana-dashboard-paper-trading.yaml
