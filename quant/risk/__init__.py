@@ -15,6 +15,12 @@ from quant.risk.limit_checker import (
     RiskLimitChecker,
 )
 from quant.risk.limits import ExposureLimits
+from quant.risk.drawdown_scaler import (
+    DrawdownScaler,
+    DrawdownScalerConfig,
+    ScaledWeights,
+    ScalerState,
+)
 from quant.risk.reporting import RiskReport, RiskReporter, StressScenario
 from quant.risk.risk_decomposition import (
     DecompositionConfig,
@@ -38,6 +44,8 @@ __all__ = [
     "CorrelationState",
     "DecompositionConfig",
     "DrawdownCircuitBreaker",
+    "DrawdownScaler",
+    "DrawdownScalerConfig",
     "BreachSeverity",
     "ExposureLimits",
     "FactorRiskContrib",
@@ -54,6 +62,8 @@ __all__ = [
     "RiskDecompositionResult",
     "RiskEngine",
     "RiskLimitChecker",
+    "ScaledWeights",
+    "ScalerState",
     "RiskReport",
     "RiskReporter",
     "SizingMethod",
