@@ -614,6 +614,25 @@ def run2_full_ensemble(
     return analyzer.run(returns, make_wf_config(ms_config, "run2_full_ensemble"))
 
 
+def _rolling_wf_config(
+    ms_config: MultiStrategyConfig,
+    name: str,
+) -> MultiStrategyWalkForwardConfig:
+    """Rolling-window WF config for sensitivity analysis.
+
+    Sensitivity runs compare parameters, so rolling windows are appropriate
+    (and much faster than expanding for ensemble configs).
+    """
+    return MultiStrategyWalkForwardConfig(
+        multi_strategy_config=ms_config,
+        is_window=252,
+        oos_window=63,
+        step_size=63,
+        expanding=False,
+        name=name,
+    )
+
+
 def run3_sensitivity(
     returns: pd.DataFrame,
     sector_map: dict[str, str],
@@ -646,7 +665,7 @@ def run3_sensitivity(
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
-        results[name] = analyzer.run(returns, make_wf_config(ms_config, name))
+        results[name] = analyzer.run(returns, _rolling_wf_config(ms_config, name))
 
     # Run 3b: MA period sensitivity
     logger.info("=== Run 3b: MA period sensitivity ===")
@@ -676,7 +695,7 @@ def run3_sensitivity(
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
-        results[name] = analyzer.run(returns, make_wf_config(ms_config, name))
+        results[name] = analyzer.run(returns, _rolling_wf_config(ms_config, name))
 
     # Run 3c: Rebalance frequency sensitivity
     # Note: rebalance_freq < 21 causes excessive regime-detection overhead
@@ -731,7 +750,7 @@ def run3_sensitivity(
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
-        results[name] = analyzer.run(returns, make_wf_config(ms_config, name, rebalance_frequency=rebalance_freq))
+        results[name] = analyzer.run(returns, _rolling_wf_config(ms_config, name))
 
     # Run 3d: Regime tilt sensitivity
     logger.info("=== Run 3d: Regime tilt sensitivity ===")
@@ -781,7 +800,7 @@ def run3_sensitivity(
             name=name,
         )
         analyzer = MultiStrategyWalkForwardAnalyzer()
-        results[name] = analyzer.run(returns, make_wf_config(ms_config, name))
+        results[name] = analyzer.run(returns, _rolling_wf_config(ms_config, name))
 
     return results
 
