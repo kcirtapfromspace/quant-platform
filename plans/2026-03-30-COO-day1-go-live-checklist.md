@@ -26,7 +26,7 @@
 
 ### B1. Alpaca Paper Account
 
-- [ ] Login to Alpaca paper account, confirm balance: ~$1,000,000 (starting NAV)
+- [ ] Login to Alpaca paper account, confirm balance: ~$100,000 (starting NAV — CEO approved Option A, 2026-03-29)
 - [ ] Confirm zero open positions (clean start)
 - [ ] Confirm paper endpoint: `ALPACA_BASE_URL=https://paper-api.alpaca.markets`
 - [ ] Confirm `ALPACA_PAPER=true` in running k8s pod env
@@ -52,7 +52,7 @@
   ```sql
   -- Only if EOD runner expects a prior-day row
   INSERT INTO daily_nav (date, nav, daily_return, cumulative_return, drawdown, cash, position_count)
-  VALUES ('2026-03-27', 1000000.0, 0.0, 0.0, 0.0, 1000000.0, 0);
+  VALUES ('2026-03-27', 100000.0, 0.0, 0.0, 0.0, 100000.0, 0);
   ```
 
 ### B4. Monitoring Stack
@@ -67,7 +67,7 @@
 ### B5. Circuit Breaker State
 
 - [ ] Confirm circuit breaker NOT tripped from any prior session
-- [ ] Risk engine startup log shows: `circuit_breaker: initialized, tripped=false, peak_nav=1000000.0`
+- [ ] Risk engine startup log shows: `circuit_breaker: initialized, tripped=false, peak_nav=100000.0`
 
 ### B6. Runbooks Ready
 
@@ -145,12 +145,11 @@ Run `plans/2026-03-28-COO-nav-reconciliation-procedure.md` for the first time:
 
 ## SECTION G: Shadow Mode
 
-**CRO default recommendation** (per `plans/2026-03-30-CRO-day1-readiness-acknowledgment.md`):
+**CPO DIRECTIVE ACTIVE** (issued 2026-03-29, per `plans/2026-03-30-CRO-day1-readiness-acknowledgment.md`):
 - **Primary:** `run2_ensemble` at 100% Kelly
-- **Shadow:** `signal_expansion_ensemble` at 90% Kelly from Day 1
+- **Shadow:** `signal_expansion_ensemble` at 90% Kelly, compute-only from Day 1 (no order submission)
 
-*Status: CPO decision still pending. If no CPO directive before 09:15 ET Monday,
-COO will apply CRO's recommendation as the operational default.*
+*CPO directed shadow mode active from Day 1. No deferral.*
 
 **Kelly fractions are non-negotiable regardless of which is primary:**
 - `run2_ensemble`: 100% Kelly
@@ -163,8 +162,9 @@ If Day 1 shadow mode active (CRO default):
 - [ ] COO confirms shadow mode output visible in `run_e_state.json` alongside primary strategy
 - [ ] Log in ops log: "Shadow mode ACTIVE from Day 1 — signal_expansion_ensemble at 90% Kelly"
 
-If CPO directs shadow mode deferred to week 2:
-- [ ] Note in ops log: "Shadow mode deferred per CPO decision — will activate before 2026-04-06 open"
+~~If CPO directs shadow mode deferred to week 2:~~
+~~- Note in ops log: "Shadow mode deferred per CPO decision — will activate before 2026-04-06 open"~~
+*(Shadow mode is NOT deferred — CPO directive requires Day 1 activation.)*
 
 ---
 
