@@ -634,6 +634,115 @@ data:
               "legendFormat": "Latency p95 (s)"
             }
           ]
+        },
+        {
+          "id": 18,
+          "type": "row",
+          "title": "quant-dashboard Service",
+          "collapsed": false,
+          "gridPos": { "x": 0, "y": 39, "w": 24, "h": 1 }
+        },
+        {
+          "id": 19,
+          "type": "stat",
+          "title": "Dashboard Pod Restarts",
+          "description": "Container restart count for quant-dashboard pod. Alert if > 3 restarts in 1h.",
+          "gridPos": { "x": 0, "y": 40, "w": 6, "h": 4 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 3 }
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "kube_pod_container_status_restarts_total{namespace=\"hypothesis-validation\",container=\"quant-dashboard\"}",
+              "legendFormat": "Restarts",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "type": "stat",
+          "title": "Dashboard Pod Ready",
+          "description": "1 = pod ready and serving traffic, 0 = not ready.",
+          "gridPos": { "x": 6, "y": 40, "w": 6, "h": 4 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": {
+                  "0": { "text": "NOT READY", "color": "red" },
+                  "1": { "text": "READY", "color": "green" }
+                }}
+              ],
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "kube_pod_container_status_ready{namespace=\"hypothesis-validation\",container=\"quant-dashboard\"}",
+              "legendFormat": "Ready",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "id": 21,
+          "type": "timeseries",
+          "title": "Dashboard Pod CPU & Memory",
+          "description": "Resource utilization for quant-dashboard container.",
+          "gridPos": { "x": 12, "y": 40, "w": 12, "h": 4 },
+          "options": {
+            "tooltip": { "mode": "multi" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": { "custom": { "lineWidth": 1 } },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "CPU (cores)" },
+                "properties": [{ "id": "unit", "value": "short" }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "Memory (MiB)" },
+                "properties": [{ "id": "unit", "value": "decmbytes" }]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "rate(container_cpu_usage_seconds_total{namespace=\"hypothesis-validation\",container=\"quant-dashboard\"}[5m])",
+              "legendFormat": "CPU (cores)"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "container_memory_working_set_bytes{namespace=\"hypothesis-validation\",container=\"quant-dashboard\"} / 1048576",
+              "legendFormat": "Memory (MiB)"
+            }
+          ]
         }
       ]
     }
