@@ -11,6 +11,7 @@
 //! quant run loop      --db <path> --schedule 16:05 [--cash 1000000] [--optimizer risk_parity] [--oms-db ./quant_oms.db]
 //! quant run status    [--oms-db ./quant_oms.db]
 //! quant backtest      --db <path> --symbol AAPL [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+//! quant wf            --db <path> [--is-days 90] [--oos-days 30] [--n-folds 64]
 //! quant serve         --db <path> [--oms-db ./quant_oms.db] [--port 8080]
 //! ```
 
@@ -19,6 +20,7 @@ mod cmd_benchmark;
 mod cmd_ingest;
 mod cmd_run;
 mod cmd_serve;
+mod cmd_wf;
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -55,6 +57,8 @@ enum Commands {
     },
     /// HTTP status server for k8s deployments.
     Serve(cmd_serve::ServeArgs),
+    /// Real-data expanding walk-forward backtest for CRO gate validation.
+    Wf(cmd_wf::WfArgs),
 }
 
 #[derive(Subcommand)]
@@ -110,5 +114,6 @@ fn main() -> anyhow::Result<()> {
             BenchmarkSuite::Qua92(args) => cmd_benchmark::run_benchmark_qua92(args),
         },
         Commands::Serve(args) => cmd_serve::run_serve(args),
+        Commands::Wf(args) => cmd_wf::run_wf(args),
     }
 }

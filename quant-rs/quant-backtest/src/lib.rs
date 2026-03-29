@@ -8,6 +8,12 @@
 //! - Commission is proportional to |change in position size|.
 //! - All metric formulas match the Python implementation to 1e-9 tolerance.
 
+pub mod walkforward;
+pub use walkforward::{
+    generate_folds, run_walk_forward, WalkForwardConfig, WalkForwardFold,
+    WalkForwardFoldResult, WalkForwardResult,
+};
+
 pub const TRADING_DAYS_PER_YEAR: f64 = 252.0;
 
 // ── Public types ─────────────────────────────────────────────────────────────
