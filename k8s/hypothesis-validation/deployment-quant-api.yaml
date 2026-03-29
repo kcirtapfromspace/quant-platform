@@ -57,7 +57,7 @@ spec:
               value: /data/metrics.prom
             - name: BACKTEST_RESULTS_DIR
               value: /backtest/results
-            - name: API_KEY
+            - name: QUANT_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: quant-api-secret
