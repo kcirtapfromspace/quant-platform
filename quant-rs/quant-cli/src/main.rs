@@ -67,6 +67,8 @@ pub enum BenchmarkSuite {
     Qua68(cmd_benchmark::BenchmarkQua68Args),
     /// QUA-92: Vol regime sleeve — PF gap closure attempt (5-sleeve ensemble).
     Qua92(cmd_benchmark::BenchmarkQua92Args),
+    /// QUA-122: Real-data expanding walk-forward backtest for CRO gate validation.
+    RealWf(cmd_wf::WfArgs),
 }
 
 #[derive(Subcommand)]
@@ -112,6 +114,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Benchmark { suite } => match suite {
             BenchmarkSuite::Qua68(args) => cmd_benchmark::run_benchmark_qua68(args),
             BenchmarkSuite::Qua92(args) => cmd_benchmark::run_benchmark_qua92(args),
+            BenchmarkSuite::RealWf(args) => cmd_wf::run_wf(args),
         },
         Commands::Serve(args) => cmd_serve::run_serve(args),
         Commands::Wf(args) => cmd_wf::run_wf(args),

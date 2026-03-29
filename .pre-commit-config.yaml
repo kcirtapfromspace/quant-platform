@@ -1,0 +1,43 @@
+# Pre-commit hooks for quant-platform (QUA-116)
+#
+# Install:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Run manually:
+#   pre-commit run --all-files
+
+repos:
+  # ── Rust ────────────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt (check)
+        language: system
+        entry: bash -c 'cd quant-rs && cargo fmt --all -- --check'
+        pass_filenames: false
+        types: [rust]
+
+      - id: cargo-clippy
+        name: cargo clippy (-D warnings)
+        language: system
+        entry: bash -c 'cd quant-rs && cargo clippy --workspace -- -D warnings'
+        pass_filenames: false
+        types: [rust]
+
+  # ── Frontend (Node / TypeScript) ─────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: frontend-typecheck
+        name: frontend tsc (typecheck)
+        language: system
+        entry: bash -c 'if [ -f frontend/package.json ]; then cd frontend && npm run typecheck --if-present; fi'
+        pass_filenames: false
+        files: ^frontend/
+
+      - id: frontend-lint
+        name: frontend eslint
+        language: system
+        entry: bash -c 'if [ -f frontend/package.json ]; then cd frontend && npm run lint --if-present; fi'
+        pass_filenames: false
+        files: ^frontend/

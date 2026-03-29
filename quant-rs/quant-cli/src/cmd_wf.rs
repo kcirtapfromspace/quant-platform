@@ -49,6 +49,11 @@ pub struct WfArgs {
     #[arg(long)]
     pub symbols: Option<String>,
 
+    /// Path to a plain-text file with one ticker per line (whitespace/empty lines ignored).
+    /// Takes precedence over `--symbols` when both are provided.
+    #[arg(long)]
+    pub universe_file: Option<String>,
+
     /// In-sample window length in trading-day bars (default: 90).
     #[arg(long, default_value = "90")]
     pub is_days: usize,
@@ -98,7 +103,7 @@ pub struct WfArgs {
 
 pub fn run_wf(args: WfArgs) -> anyhow::Result<()> {
     let store = MarketDataStore::open(&args.db)?;
-    let universe = resolve_symbols(args.symbols.as_deref());
+    let universe = resolve_universe(&args)?;
 
     let start = args
         .start
@@ -422,6 +427,27 @@ fn build_returns(adj_close: &[f64], n_assets: usize, n_bars: usize) -> Vec<f64> 
     rets
 }
 
+/// Resolve the trading universe from CLI args.
+///
+/// Priority: `--universe-file` > `--symbols` > built-in 50-symbol default.
+fn resolve_universe(args: &WfArgs) -> anyhow::Result<Vec<String>> {
+    if let Some(path) = &args.universe_file {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read --universe-file '{}': {}", path, e))?;
+        let symbols: Vec<String> = content
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|s| s.to_uppercase())
+            .collect();
+        if symbols.is_empty() {
+            anyhow::bail!("--universe-file '{}' contained no valid tickers", path);
+        }
+        return Ok(symbols);
+    }
+    Ok(resolve_symbols(args.symbols.as_deref()))
+}
+
 fn resolve_symbols(arg: Option<&str>) -> Vec<String> {
     if let Some(s) = arg {
         return s.split(',').map(|x| x.trim().to_uppercase()).collect();
@@ -582,6 +608,7 @@ fn write_json(
         },
         "data": {
             "n_symbols": symbols.len(),
+            "symbols": symbols,
             "n_bars": n_bars,
             "start": dates.first().map(|d| d.to_string()),
             "end": dates.last().map(|d| d.to_string()),
@@ -609,4 +636,122 @@ fn write_json(
     let mut f = std::fs::File::create(path)?;
     write!(f, "{}", serde_json::to_string_pretty(&doc)?)?;
     Ok(())
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_symbols_default_returns_50() {
+        let syms = resolve_symbols(None);
+        assert_eq!(syms.len(), 50);
+        assert!(syms.contains(&"AAPL".to_string()));
+        assert!(syms.contains(&"MSFT".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_symbols_custom_parses_and_uppercases() {
+        let syms = resolve_symbols(Some("aapl, goog, tsla"));
+        assert_eq!(syms, vec!["AAPL", "GOOG", "TSLA"]);
+    }
+
+    #[test]
+    fn test_resolve_universe_falls_back_to_symbols_when_no_file() {
+        let args = WfArgs {
+            db: "dummy.duckdb".into(),
+            symbols: Some("SPY,QQQ".into()),
+            universe_file: None,
+            is_days: 90,
+            oos_days: 30,
+            step_days: 30,
+            n_folds: 64,
+            start: None,
+            end: None,
+            commission: 0.001,
+            initial_capital: 1_000_000.0,
+            rebalance_every: 21,
+            output_json: None,
+            signals: "momentum,mean_reversion,trend".into(),
+        };
+        let syms = resolve_universe(&args).unwrap();
+        assert_eq!(syms, vec!["SPY", "QQQ"]);
+    }
+
+    #[test]
+    fn test_resolve_universe_reads_universe_file() {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "# comment").unwrap();
+        writeln!(tmp, "aapl").unwrap();
+        writeln!(tmp, "  goog  ").unwrap();
+        writeln!(tmp).unwrap(); // blank line
+        writeln!(tmp, "MSFT").unwrap();
+        let args = WfArgs {
+            db: "dummy.duckdb".into(),
+            symbols: Some("IGNORED".into()),
+            universe_file: Some(tmp.path().to_string_lossy().into_owned()),
+            is_days: 90,
+            oos_days: 30,
+            step_days: 30,
+            n_folds: 64,
+            start: None,
+            end: None,
+            commission: 0.001,
+            initial_capital: 1_000_000.0,
+            rebalance_every: 21,
+            output_json: None,
+            signals: "momentum,mean_reversion,trend".into(),
+        };
+        let syms = resolve_universe(&args).unwrap();
+        assert_eq!(syms, vec!["AAPL", "GOOG", "MSFT"]);
+    }
+
+    #[test]
+    fn test_resolve_universe_file_missing_errors() {
+        let args = WfArgs {
+            db: "dummy.duckdb".into(),
+            symbols: None,
+            universe_file: Some("/nonexistent/universe.txt".into()),
+            is_days: 90,
+            oos_days: 30,
+            step_days: 30,
+            n_folds: 64,
+            start: None,
+            end: None,
+            commission: 0.001,
+            initial_capital: 1_000_000.0,
+            rebalance_every: 21,
+            output_json: None,
+            signals: "momentum,mean_reversion,trend".into(),
+        };
+        assert!(resolve_universe(&args).is_err());
+    }
+
+    #[test]
+    fn test_resolve_universe_empty_file_errors() {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "# only comments").unwrap();
+        writeln!(tmp, "  ").unwrap();
+        let args = WfArgs {
+            db: "dummy.duckdb".into(),
+            symbols: None,
+            universe_file: Some(tmp.path().to_string_lossy().into_owned()),
+            is_days: 90,
+            oos_days: 30,
+            step_days: 30,
+            n_folds: 64,
+            start: None,
+            end: None,
+            commission: 0.001,
+            initial_capital: 1_000_000.0,
+            rebalance_every: 21,
+            output_json: None,
+            signals: "momentum,mean_reversion,trend".into(),
+        };
+        assert!(resolve_universe(&args).is_err());
+    }
 }
