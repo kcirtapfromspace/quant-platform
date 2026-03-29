@@ -22,7 +22,7 @@ spec:
         app: quant-server
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
+        prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
       imagePullSecrets:
@@ -41,7 +41,9 @@ spec:
           persistentVolumeClaim:
             claimName: run-e-state
       containers:
-        # ── Rust status/metrics server ──────────────────────────────────────
+        # ── Rust Axum API server (QUA-102) ──────────────────────────────────
+        # quant serve is now the full REST+WebSocket API gateway (quant-api crate).
+        # Port 8080. Requires QUANT_API_KEY and QUANT_API_CORS_ORIGIN.
         - name: quant-server
           image: ghcr.io/kcirtapfromspace/quant-rs:latest
           imagePullPolicy: Always
@@ -49,15 +51,25 @@ spec:
             - /usr/local/bin/quant
             - serve
             - --port
-            - "8000"
+            - "8080"
             - --db
             - /data/quant.duckdb
+            - --oms-db
+            - /data/quant_oms.db
+          env:
+            - name: QUANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: quant-api-credentials
+                  key: QUANT_API_KEY
+            - name: QUANT_API_CORS_ORIGIN
+              value: "https://dashboard.tail16ecc2.ts.net"
           volumeMounts:
             - name: market-data
               mountPath: /data
           ports:
             - name: http
-              containerPort: 8000
+              containerPort: 8080
           resources:
             requests:
               cpu: "100m"
@@ -68,14 +80,14 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: 8080
             initialDelaySeconds: 5
             periodSeconds: 30
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: 8080
             initialDelaySeconds: 3
             periodSeconds: 10
 
@@ -140,14 +152,15 @@ metadata:
   namespace: hypothesis-validation
   annotations:
     prometheus.io/scrape: "true"
-    prometheus.io/port: "8000"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
 spec:
   selector:
     app: quant-server
   ports:
     - name: http
       port: 80
-      targetPort: 8000
+      targetPort: 8080
     - name: run-e-metrics
       port: 8001
       targetPort: 8001

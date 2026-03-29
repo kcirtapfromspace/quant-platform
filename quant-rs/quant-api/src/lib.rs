@@ -15,6 +15,7 @@ pub mod ws;
 use std::sync::Arc;
 
 use axum::{
+    http::{header, HeaderValue, Method},
     middleware,
     routing::get,
     Router,
@@ -22,7 +23,7 @@ use axum::{
 use tokio::sync::broadcast;
 use tower_http::{
     compression::CompressionLayer,
-    cors::{Any, CorsLayer},
+    cors::CorsLayer,
 };
 use tracing::info;
 
@@ -77,7 +78,18 @@ impl AppState {
 }
 
 /// Build the Axum router.  Call [`serve`] to bind and run it.
+///
+/// Security properties:
+/// - `/health` is public (k8s liveness probe).
+/// - All `/api/v1/*` routes require `X-API-Key` header (fail-closed when no
+///   key is configured).
+/// - `/ws` requires `X-API-Key` header **or** `?api_key=` query param
+///   (browsers cannot set headers on WebSocket upgrades).
+/// - CORS is restricted to `QUANT_API_CORS_ORIGIN` env var (default:
+///   `https://dashboard.tail16ecc2.ts.net`).  Wildcard origin is rejected.
 pub fn build_router(state: Arc<AppState>) -> Router {
+    let auth_layer = middleware::from_fn_with_state(state.clone(), auth::require_api_key);
+
     let api_routes = Router::new()
         .route("/portfolio", get(routes::portfolio::get_portfolio))
         .route("/orders", get(routes::orders::get_orders))
@@ -85,20 +97,30 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/signals", get(routes::signals::get_signals))
         .route("/backtest/latest", get(routes::backtest::get_backtest_latest))
         .route("/market/quotes", get(routes::market::get_quotes))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_api_key,
-        ));
+        .layer(auth_layer.clone());
+
+    // CORS: read allowed origin from env; no wildcard fallback.
+    let cors_origin = std::env::var("QUANT_API_CORS_ORIGIN")
+        .unwrap_or_else(|_| "https://dashboard.tail16ecc2.ts.net".to_string());
+    let allowed_origin: HeaderValue = cors_origin
+        .parse()
+        .expect("QUANT_API_CORS_ORIGIN is not a valid header value");
 
     Router::new()
         .route("/health", get(routes::health::health))
         .nest("/api/v1", api_routes)
-        .route("/ws", get(ws::ws_handler))
+        // WebSocket: protected by the same auth middleware.
+        // Clients must supply ?api_key=<key> in the upgrade URL.
+        .route(
+            "/ws",
+            get(ws::ws_handler).layer(auth_layer),
+        )
         .layer(
             CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
+                .allow_origin(allowed_origin)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+                .allow_credentials(false),
         )
         .layer(CompressionLayer::new())
         .with_state(state)

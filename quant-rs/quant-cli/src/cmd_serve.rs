@@ -29,6 +29,15 @@ pub struct ServeArgs {
 }
 
 pub fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
+    // CRO Finding 1: refuse to start without an API key.
+    let api_key = std::env::var("QUANT_API_KEY").unwrap_or_else(|_| {
+        eprintln!(
+            "ERROR: QUANT_API_KEY environment variable is not set.\n\
+             quant serve refuses to start without authentication configured."
+        );
+        std::process::exit(1);
+    });
+
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -39,11 +48,12 @@ pub fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
                 None
             };
 
-            let state = quant_api::AppState::new(
+            let state = quant_api::AppState::new_with_key(
                 args.db,
                 oms_db,
                 args.metrics_file,
                 args.backtest_results_dir,
+                Some(api_key),
             );
 
             quant_api::serve(state, args.port).await
