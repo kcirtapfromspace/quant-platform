@@ -1,8 +1,12 @@
 # syntax=docker/dockerfile:1
-# Multi-stage ARM64 build. Build context must be the quant-rs/ workspace root.
+# Multi-stage ARM64 build using cargo-chef for dependency caching.
+# Build context must be the quant-rs/ workspace root.
+#
+# Cold first build: ~5-6h (DuckDB C++ under QEMU + cargo-chef cook).
+# Warm subsequent builds: ~10-15m (cook layer cached in registry; only Rust source recompiled).
 
-# ── Stage 1: builder ──────────────────────────────────────────────────────────
-FROM rust:1.82-slim AS builder
+# ── Stage 0: cargo-chef base ──────────────────────────────────────────────────
+FROM --platform=linux/arm64 rust:1.93.1-slim-bookworm AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
@@ -11,13 +15,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /build
-COPY . .
+RUN cargo install cargo-chef --locked
 
+WORKDIR /build
+
+# ── Stage 1: Dependency recipe planner ───────────────────────────────────────
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 2: Dependency cook (cached layer) ───────────────────────────────────
+# Invalidated only when Cargo.lock changes.
+# Compiles all workspace deps including bundled DuckDB C++ source (~5-6h cold under QEMU,
+# cached on subsequent builds via type=registry cache in CI).
+FROM chef AS builder
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Copy real workspace source and build quant-api binary.
+COPY . .
 RUN cargo build --release --bin quant-api
 
-# ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+# ── Stage 3: Minimal runtime image ───────────────────────────────────────────
+FROM --platform=linux/arm64 debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

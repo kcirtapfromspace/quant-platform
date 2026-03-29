@@ -201,7 +201,11 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-api.outputs.tags }}
           labels: ${{ steps.meta-api.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-api:cache
+          # Cross-seed from quant-rs:cache so the cargo-chef cook layer (DuckDB C++ deps)
+          # is a cache hit on the first build — avoids 5+ hour cold compile under QEMU.
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-api:cache
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-api:cache,mode=max
 
   # ---------------------------------------------------------------------------
