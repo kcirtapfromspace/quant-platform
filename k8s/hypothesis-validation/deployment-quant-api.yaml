@@ -1,0 +1,111 @@
+# quant-api: Axum REST + WebSocket gateway for the trading dashboard
+# Namespace: hypothesis-validation
+# Image: ghcr.io/kcirtapfromspace/quant-api:latest (ARM64)
+# QUA-111 delivers the image; QUA-109 deploys it here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quant-api
+  namespace: hypothesis-validation
+  labels:
+    app: quant-api
+    component: api-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quant-api
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: quant-api
+        component: api-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      imagePullSecrets:
+        - name: ghcr-creds
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsGroup: 999
+      nodeSelector:
+        kubernetes.io/hostname: talos-lwn-dba
+      volumes:
+        - name: market-data
+          persistentVolumeClaim:
+            claimName: market-data
+        - name: backtest-results
+          persistentVolumeClaim:
+            claimName: backtest-results
+      containers:
+        - name: quant-api
+          image: ghcr.io/kcirtapfromspace/quant-api:latest
+          imagePullPolicy: Always
+          env:
+            - name: PORT
+              value: "8080"
+            - name: QUANT_DB_PATH
+              value: /data/quant.duckdb
+            - name: OMS_DB_PATH
+              value: /data/oms.db
+            - name: METRICS_PATH
+              value: /data/metrics.prom
+            - name: BACKTEST_RESULTS_DIR
+              value: /backtest/results
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: quant-api-secret
+                  key: api_key
+                  optional: true
+          volumeMounts:
+            - name: market-data
+              mountPath: /data
+              readOnly: true
+            - name: backtest-results
+              mountPath: /backtest
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quant-api
+  namespace: hypothesis-validation
+  labels:
+    app: quant-api
+spec:
+  selector:
+    app: quant-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

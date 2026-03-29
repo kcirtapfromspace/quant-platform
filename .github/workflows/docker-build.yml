@@ -5,16 +5,19 @@ on:
     branches: [main, develop]
     paths:
       - "quant-rs/**"
-      - "demo/**"
-      - "Dockerfile.runE"
+      - "quant/**"
+      - "frontend/**"
+      - "pyproject.toml"
       - ".github/workflows/docker-build.yml"
   pull_request:
     branches: [main, develop]
     paths:
       - "quant-rs/**"
-      - "demo/**"
-      - "Dockerfile.runE"
+      - "quant/**"
+      - "frontend/**"
+      - "pyproject.toml"
   workflow_dispatch: {}
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -201,6 +204,116 @@ jobs:
           labels: ${{ steps.meta-dashboard.outputs.labels }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-dashboard:cache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-dashboard:cache,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Build quant-api ARM64 image (Axum REST + WebSocket gateway)
+  # QUA-111 / QUA-109: production API gateway for trading dashboard
+  # ---------------------------------------------------------------------------
+  build-api:
+    name: Build quant-api ARM64 image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (ARM64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta-api
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-api
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push quant-api
+        uses: docker/build-push-action@v5
+        with:
+          context: ./quant-rs
+          file: ./quant-rs/quant-api/Dockerfile
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-api.outputs.tags }}
+          labels: ${{ steps.meta-api.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-api:cache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-api:cache,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Build quant-frontend ARM64 image (nginx + React 19 SPA)
+  # QUA-110 / QUA-109: production trading dashboard frontend
+  # ---------------------------------------------------------------------------
+  build-frontend:
+    name: Build quant-frontend ARM64 image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (ARM64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta-fe
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-frontend
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push quant-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-fe.outputs.tags }}
+          labels: ${{ steps.meta-fe.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-frontend:cache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-frontend:cache,mode=max
 
   # ---------------------------------------------------------------------------
   # Push to the local Turing Pi cluster registry.
