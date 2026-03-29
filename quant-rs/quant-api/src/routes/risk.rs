@@ -72,6 +72,7 @@ pub async fn get_risk(State(state): State<Arc<AppState>>) -> ApiResult<Json<Risk
 
 /// Frontend-shaped risk snapshot (matches the `RiskSnapshot` TypeScript interface).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RiskSnapshotView {
     pub var95: f64,
     pub var99: f64,
@@ -82,6 +83,7 @@ pub struct RiskSnapshotView {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PositionLimitEntry {
     pub symbol: String,
     pub utilization: f64,

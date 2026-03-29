@@ -77,7 +77,7 @@ impl<S: DataSource> IngestionPipeline<S> {
         // Limit gap-detection window to what was actually fetched (capped at 30 days).
         // Without this cap, incremental ingest on a fresh DB would only populate
         // ~5 days but detect_gaps would scan the last 30 days, producing ~20 false gaps.
-        let lookback_days = (end_date - check_start).num_days().max(1).min(30);
+        let lookback_days = (end_date - check_start).num_days().clamp(1, 30);
         let gaps = self.detect_gaps(&symbols_upper, end_date, lookback_days)?;
 
         Ok(PipelineResult {

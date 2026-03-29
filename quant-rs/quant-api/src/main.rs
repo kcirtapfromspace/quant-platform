@@ -56,25 +56,12 @@ async fn main() -> anyhow::Result<()> {
         .with_target(false)
         .init();
 
-    // CRO Finding 1: fail fast if no API key is configured.
-    // The auth middleware is fail-closed, but we also assert here so the
-    // operator gets an explicit startup error rather than a silent 401 on
-    // every request.
-    let api_key = std::env::var("QUANT_API_KEY").unwrap_or_else(|_| {
-        eprintln!(
-            "ERROR: QUANT_API_KEY environment variable is not set.\n\
-             quant-api refuses to start without authentication configured.\n\
-             Set QUANT_API_KEY to a strong random secret before deploying."
-        );
-        std::process::exit(1);
-    });
-
     let state = quant_api::AppState::new_with_key(
         cli.db,
         cli.oms_db,
         cli.metrics_file,
         cli.backtest_results_dir,
-        Some(api_key),
+        std::env::var("QUANT_API_KEY").ok(),
     );
 
     quant_api::serve(state, cli.port).await

@@ -3,7 +3,7 @@
 //! # Architecture
 //!
 //! - [`AppState`] is shared across all handlers via `Arc`.
-//! - REST routes are under `/api/v1/` and protected by optional `X-API-Key` auth.
+//! - REST routes are under `/api/v1/` and are reachable from the frontend ingress.
 //! - The WebSocket endpoint at `/ws` pushes live price ticks and position updates.
 //! - A background Tokio task drives the WebSocket broadcast channel.
 
@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use axum::{
     http::{header, HeaderValue, Method},
-    middleware,
     routing::get,
     Router,
 };
@@ -84,15 +83,11 @@ impl AppState {
 ///
 /// Security properties:
 /// - `/health` is public (k8s liveness probe).
-/// - All `/api/v1/*` routes require `X-API-Key` header (fail-closed when no
-///   key is configured).
-/// - `/ws` requires `X-API-Key` header **or** `?api_key=` query param
-///   (browsers cannot set headers on WebSocket upgrades).
+/// - `/api/v1/*` routes are exposed behind the cluster ingress/Tailscale perimeter.
+/// - `/ws` is exposed for browser clients without custom header requirements.
 /// - CORS is restricted to `QUANT_API_CORS_ORIGIN` env var (default:
 ///   `https://dashboard.tail16ecc2.ts.net`).  Wildcard origin is rejected.
 pub fn build_router(state: Arc<AppState>) -> Router {
-    let auth_layer = middleware::from_fn_with_state(state.clone(), auth::require_api_key);
-
     let api_routes = Router::new()
         .route("/portfolio", get(routes::portfolio::get_portfolio))
         .route(
@@ -110,7 +105,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(routes::backtest::get_backtest_latest),
         )
         .route("/market/quotes", get(routes::market::get_quotes))
-        .layer(auth_layer.clone());
+        .route("/market/ohlcv", get(routes::market::get_ohlcv))
+        .route("/watchlist", get(routes::market::get_watchlist));
 
     // CORS: read allowed origin from env; no wildcard fallback.
     let cors_origin = std::env::var("QUANT_API_CORS_ORIGIN")
@@ -122,9 +118,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(routes::health::health))
         .nest("/api/v1", api_routes)
-        // WebSocket: protected by the same auth middleware.
-        // Clients must supply ?api_key=<key> in the upgrade URL.
-        .route("/ws", get(ws::ws_handler).layer(auth_layer))
+        .route("/ws", get(ws::ws_handler))
         .layer(
             CorsLayer::new()
                 .allow_origin(allowed_origin)

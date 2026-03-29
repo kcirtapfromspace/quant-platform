@@ -33,6 +33,8 @@ spec:
         fsGroup: 999
         runAsUser: 999
         runAsGroup: 999
+      # market-data PVC is RWO and is shared with quant-server/run-e, so keep
+      # this pod co-located on the same node to avoid multi-attach failures.
       nodeSelector:
         kubernetes.io/hostname: talos-lwn-dba
       volumes:
@@ -72,10 +74,10 @@ spec:
           resources:
             requests:
               cpu: "100m"
-              memory: "256Mi"
+              memory: "64Mi"
             limits:
               cpu: "500m"
-              memory: "512Mi"
+              memory: "384Mi"
           livenessProbe:
             httpGet:
               path: /health

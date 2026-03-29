@@ -14,20 +14,36 @@ use crate::AppState;
 
 /// Events pushed to WebSocket clients.
 #[derive(Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum WsEvent {
-    PriceTick {
-        symbol: String,
-        close: f64,
-        date: String,
-    },
-    PositionUpdate {
-        symbol: String,
-        quantity: f64,
-        market_value: f64,
-        unrealized_pnl: f64,
-    },
+    Quote(QuotePayload),
+    Ohlcv(OhlcvPayload),
     Heartbeat,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotePayload {
+    pub symbol: String,
+    pub price: f64,
+    pub change: f64,
+    pub change_percent: f64,
+    pub high: f64,
+    pub low: f64,
+    pub open: f64,
+    pub previous_close: f64,
+    pub volume: f64,
+    pub timestamp: i64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct OhlcvPayload {
+    pub time: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
 }
 
 pub fn new_broadcast() -> (broadcast::Sender<WsEvent>, broadcast::Receiver<WsEvent>) {
@@ -89,14 +105,14 @@ pub async fn broadcast_task(state: Arc<AppState>) {
         // Fetch latest OHLCV quotes from DuckDB
         let db_path = state.db_path.clone();
         let quotes = tokio::task::spawn_blocking(move || {
-            let store = quant_data::MarketDataStore::open(&db_path).ok()?;
+            let store = quant_data::MarketDataStore::open_read_only(&db_path).ok()?;
             let symbols = store.symbols().ok()?;
             let mut result = Vec::new();
             for sym in &symbols {
                 if let Ok(Some(date)) = store.latest_date(sym) {
                     if let Ok(bars) = store.query(sym, date, date) {
                         if let Some(bar) = bars.into_iter().next() {
-                            result.push((sym.clone(), bar.close, date.to_string()));
+                            result.push(bar);
                         }
                     }
                 }
@@ -108,34 +124,41 @@ pub async fn broadcast_task(state: Arc<AppState>) {
         .flatten()
         .unwrap_or_default();
 
-        for (symbol, close, date) in quotes {
-            let _ = state.broadcast_tx.send(WsEvent::PriceTick {
-                symbol,
-                close,
-                date,
-            });
+        for bar in quotes {
+            let previous_close = bar.open;
+            let price = bar.adj_close;
+            let change = price - previous_close;
+            let change_percent = if previous_close.abs() > f64::EPSILON {
+                (change / previous_close) * 100.0
+            } else {
+                0.0
+            };
+            let timestamp = bar.date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+
+            let _ = state.broadcast_tx.send(WsEvent::Quote(QuotePayload {
+                symbol: bar.symbol.clone(),
+                price,
+                change,
+                change_percent,
+                high: bar.high,
+                low: bar.low,
+                open: bar.open,
+                previous_close,
+                volume: bar.volume,
+                timestamp,
+            }));
+
+            let _ = state.broadcast_tx.send(WsEvent::Ohlcv(OhlcvPayload {
+                time: timestamp,
+                open: bar.open,
+                high: bar.high,
+                low: bar.low,
+                close: price,
+                volume: bar.volume,
+            }));
         }
 
-        // Fetch current positions from OMS SQLite
-        if let Some(ref oms_path) = state.oms_db_path {
-            let path = oms_path.clone();
-            let positions = tokio::task::spawn_blocking(move || {
-                let store = quant_oms::SqliteStateStore::new(&path).ok()?;
-                store.load_positions().ok()
-            })
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-
-            for (symbol, pos) in positions {
-                let _ = state.broadcast_tx.send(WsEvent::PositionUpdate {
-                    symbol,
-                    quantity: pos.quantity,
-                    market_value: pos.market_value(),
-                    unrealized_pnl: pos.unrealized_pnl(),
-                });
-            }
-        }
+        // TODO: add explicit portfolio/orderbook strategy_state websocket payloads if/when
+        // frontend consumers require live updates beyond quote/ohlcv streaming.
     }
 }

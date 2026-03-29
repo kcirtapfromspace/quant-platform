@@ -182,10 +182,13 @@ fn assert_order_shape(order: &Value) {
     assert_eq!(order["id"], "ord-aapl-001");
     assert_eq!(order["symbol"], "AAPL");
     assert_eq!(order["side"], "buy");
-    assert_eq!(order["order_type"], "limit");
+    assert_eq!(order["type"], "limit");
     assert_eq!(order["status"], "filled");
-    assert_eq!(order["filled_quantity"], 25.0);
-    assert_eq!(order["avg_fill_price"], 183.1);
+    assert_eq!(order["quantity"], 25.0);
+    assert_eq!(order["limitPrice"], 182.5);
+    assert_eq!(order["fillPrice"], 183.1);
+    assert!(order["createdAt"].as_i64().is_some());
+    assert!(order["filledAt"].as_i64().is_some());
 }
 
 #[tokio::test]
@@ -200,7 +203,7 @@ async fn health_returns_public_status_payload() {
 }
 
 #[tokio::test]
-async fn protected_routes_require_a_valid_api_key() {
+async fn api_routes_are_public_for_ingress_clients() {
     let fixture = TestFixture::auth_only();
 
     for uri in [
@@ -211,21 +214,19 @@ async fn protected_routes_require_a_valid_api_key() {
         "/api/v1/market/quotes",
         "/api/v1/backtest/latest",
     ] {
-        let (missing_status, missing_json) = json_response(fixture.state.clone(), uri, None).await;
-        assert_eq!(missing_status, StatusCode::UNAUTHORIZED, "{uri}");
-        assert_eq!(missing_json["error"], "invalid or missing X-API-Key");
+        let (missing_status, _missing_json) = json_response(fixture.state.clone(), uri, None).await;
+        assert_ne!(missing_status, StatusCode::UNAUTHORIZED, "{uri}");
 
-        let (wrong_status, wrong_json) =
+        let (wrong_status, _wrong_json) =
             json_response(fixture.state.clone(), uri, Some("wrong-key")).await;
-        assert_eq!(wrong_status, StatusCode::UNAUTHORIZED, "{uri}");
-        assert_eq!(wrong_json["error"], "invalid or missing X-API-Key");
+        assert_ne!(wrong_status, StatusCode::UNAUTHORIZED, "{uri}");
     }
 }
 
 #[tokio::test]
 async fn portfolio_returns_positions_and_weights() {
     let fixture = TestFixture::seeded();
-    let (status, json) = json_response(fixture.state, "/api/v1/portfolio", Some(API_KEY)).await;
+    let (status, json) = json_response(fixture.state, "/api/v1/portfolio", None).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["n_positions"], 1);
@@ -243,7 +244,7 @@ async fn portfolio_returns_positions_and_weights() {
 #[tokio::test]
 async fn orders_returns_recent_oms_rows() {
     let fixture = TestFixture::seeded();
-    let (status, json) = json_response(fixture.state, "/api/v1/orders", Some(API_KEY)).await;
+    let (status, json) = json_response(fixture.state, "/api/v1/orders", None).await;
 
     assert_eq!(status, StatusCode::OK);
     let orders = json.as_array().unwrap();
@@ -254,7 +255,7 @@ async fn orders_returns_recent_oms_rows() {
 #[tokio::test]
 async fn risk_returns_metrics_and_prometheus_gauges() {
     let fixture = TestFixture::seeded();
-    let (status, json) = json_response(fixture.state, "/api/v1/risk", Some(API_KEY)).await;
+    let (status, json) = json_response(fixture.state, "/api/v1/risk", None).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["n_long"], 1);
@@ -268,7 +269,7 @@ async fn risk_returns_metrics_and_prometheus_gauges() {
 #[tokio::test]
 async fn signals_returns_ranked_signal_views() {
     let fixture = TestFixture::seeded();
-    let (status, json) = json_response(fixture.state, "/api/v1/signals", Some(API_KEY)).await;
+    let (status, json) = json_response(fixture.state, "/api/v1/signals", None).await;
 
     assert_eq!(status, StatusCode::OK);
     let signals = json.as_array().unwrap();
@@ -282,7 +283,7 @@ async fn signals_returns_ranked_signal_views() {
 #[tokio::test]
 async fn market_quotes_returns_latest_bar_per_symbol() {
     let fixture = TestFixture::seeded();
-    let (status, json) = json_response(fixture.state, "/api/v1/market/quotes", Some(API_KEY)).await;
+    let (status, json) = json_response(fixture.state, "/api/v1/market/quotes", None).await;
 
     assert_eq!(status, StatusCode::OK);
     let quotes = json.as_array().unwrap();
@@ -295,8 +296,7 @@ async fn market_quotes_returns_latest_bar_per_symbol() {
 #[tokio::test]
 async fn backtest_latest_returns_latest_results_fixture() {
     let fixture = TestFixture::seeded();
-    let (status, json) =
-        json_response(fixture.state, "/api/v1/backtest/latest", Some(API_KEY)).await;
+    let (status, json) = json_response(fixture.state, "/api/v1/backtest/latest", None).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["symbol"], "AAPL");
@@ -307,9 +307,44 @@ async fn backtest_latest_returns_latest_results_fixture() {
 #[tokio::test]
 async fn backtest_latest_returns_not_found_when_results_are_missing() {
     let fixture = TestFixture::auth_only();
-    let (status, json) =
-        json_response(fixture.state, "/api/v1/backtest/latest", Some(API_KEY)).await;
+    let (status, json) = json_response(fixture.state, "/api/v1/backtest/latest", None).await;
 
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json["error"], "no backtest results found");
+}
+
+#[tokio::test]
+async fn risk_snapshot_uses_frontend_camel_case_shape() {
+    let fixture = TestFixture::seeded();
+    let (status, json) = json_response(fixture.state, "/api/v1/risk/snapshot", None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(json.get("maxDrawdown").is_some());
+    assert!(json.get("circuitBreakerArmed").is_some());
+    assert!(json.get("positionLimitUtilization").is_some());
+}
+
+#[tokio::test]
+async fn ohlcv_and_watchlist_routes_match_frontend_contract() {
+    let fixture = TestFixture::seeded();
+
+    let (watchlist_status, watchlist_json) =
+        json_response(fixture.state.clone(), "/api/v1/watchlist", None).await;
+    assert_eq!(watchlist_status, StatusCode::OK);
+    let watchlist = watchlist_json.as_array().unwrap();
+    assert_eq!(watchlist.first().unwrap(), "AAPL");
+    assert!(watchlist.iter().any(|symbol| symbol == "MSFT"));
+
+    let (ohlcv_status, ohlcv_json) = json_response(
+        fixture.state,
+        "/api/v1/market/ohlcv?symbol=AAPL&interval=5m",
+        None,
+    )
+    .await;
+    assert_eq!(ohlcv_status, StatusCode::OK);
+    let bars = ohlcv_json.as_array().unwrap();
+    assert!(!bars.is_empty());
+    assert!(bars[0]["time"].as_i64().is_some());
+    assert!(bars[0]["open"].as_f64().is_some());
+    assert!(bars[0]["close"].as_f64().is_some());
 }
