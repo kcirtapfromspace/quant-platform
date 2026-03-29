@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::OmsResult;
@@ -279,6 +279,25 @@ impl SqliteStateStore {
             )
             .optional()?;
         Ok(result)
+    }
+
+    /// Returns the date (in local time) of the most recently created order,
+    /// or `None` if no orders exist in the store.
+    pub fn last_order_date(&self) -> OmsResult<Option<NaiveDate>> {
+        let result = self
+            .conn
+            .query_row(
+                "SELECT created_at FROM orders ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+
+        Ok(result.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Local).date_naive())
+        }))
     }
 }
 

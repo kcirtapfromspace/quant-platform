@@ -269,6 +269,13 @@ impl OrderManagementSystem {
             pos.market_price = price;
         }
     }
+
+    /// Date (local time) of the most recently submitted order, or `None` if
+    /// no orders exist in the persistent store.  Always returns `None` for
+    /// in-memory OMS instances.
+    pub fn last_order_date(&self) -> Option<chrono::NaiveDate> {
+        self.store.as_ref()?.last_order_date().ok().flatten()
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

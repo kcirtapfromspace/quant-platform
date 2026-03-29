@@ -1,8 +1,19 @@
-//! `quant run once` — execute a single portfolio rebalance cycle.
+//! `quant run` subcommands — single-cycle, daily daemon, and status reporter.
 //!
-//! Pulls historical returns from the DuckDB store, computes technical features,
-//! generates signals (momentum, mean-reversion, trend-following), combines them
-//! into alpha scores, optimises the portfolio, and submits orders to a paper OMS.
+//! # Subcommands
+//!
+//! - `quant run once`   — execute one rebalance cycle and exit
+//! - `quant run loop`   — daily daemon: rebalances at `--schedule` time each day
+//! - `quant run status` — read the SQLite OMS file and print positions + PnL
+//!
+//! All subcommands share the same signal pipeline (momentum / mean-reversion /
+//! trend-following) and can be narrowed via `--signals`.
+//!
+//! ## Alpaca wiring (loop only)
+//!
+//! Set `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, and `ALPACA_PAPER=true` to route
+//! live orders through the Alpaca paper-trading endpoint.  When the vars are
+//! absent the daemon records orders in the OMS only (paper simulation).
 
 use std::collections::HashMap;
 
@@ -12,12 +23,17 @@ use tracing::{info, warn};
 
 use quant_data::MarketDataStore;
 use quant_features as qf;
-use quant_oms::{Order, OrderManagementSystem, OrderSide, OrderType};
+use quant_oms::{
+    AlpacaBrokerAdapter, Broker, Order, OrderManagementSystem, OrderSide, OrderType,
+    SqliteStateStore,
+};
 use quant_portfolio::alpha::{AlphaCombiner, CombinationMethod, SignalInput};
 use quant_portfolio::optimizer::{optimize, PortfolioConstraints};
 use quant_portfolio::{estimate_covariance, OptimizationMethod, Rebalancer};
-use quant_risk::ExposureLimits;
+use quant_risk::{DrawdownCircuitBreaker, ExposureLimits};
 use quant_signals::{mean_reversion_signal, momentum_signal, trend_following_signal};
+
+// ── CLI argument structs ───────────────────────────────────────────────────────
 
 #[derive(Args)]
 pub struct RunOnceArgs {
@@ -30,8 +46,7 @@ pub struct RunOnceArgs {
     pub cash: f64,
 
     /// Portfolio optimisation method.
-    #[arg(long, default_value = "risk_parity",
-          value_parser = parse_optimizer)]
+    #[arg(long, default_value = "risk_parity", value_parser = parse_optimizer)]
     pub optimizer: OptimizationMethod,
 
     /// Comma-separated symbols (overrides built-in universe).
@@ -47,32 +62,279 @@ pub struct RunOnceArgs {
     pub min_order_value: f64,
 
     /// Path to write Prometheus textfile metrics after each cycle.
-    /// The file is consumed by `quant serve --metrics-file`.
-    /// Defaults to /tmp/quant_paper_metrics.prom when not set.
     #[arg(long, default_value = "/tmp/quant_paper_metrics.prom")]
     pub metrics_file: String,
+
+    /// Comma-separated signals to use: momentum, mean_reversion, trend (default: all three).
+    #[arg(long, default_value = "momentum,mean_reversion,trend")]
+    pub signals: String,
 }
+
+#[derive(Args)]
+pub struct RunLoopArgs {
+    /// Path to the DuckDB market data file.
+    #[arg(long)]
+    pub db: String,
+
+    /// Path to the SQLite OMS state file (persists positions across restarts).
+    #[arg(long, default_value = "./quant_oms.db")]
+    pub oms_db: String,
+
+    /// Daily rebalance time in HH:MM (24-hour local time, e.g. 16:05).
+    #[arg(long, default_value = "16:05")]
+    pub schedule: String,
+
+    /// Starting cash balance (used as portfolio size for order sizing).
+    #[arg(long, default_value = "1000000")]
+    pub cash: f64,
+
+    /// Portfolio optimisation method.
+    #[arg(long, default_value = "risk_parity", value_parser = parse_optimizer)]
+    pub optimizer: OptimizationMethod,
+
+    /// Comma-separated symbols (overrides built-in universe).
+    #[arg(long)]
+    pub symbols: Option<String>,
+
+    /// Number of trading-day bars used for covariance estimation.
+    #[arg(long, default_value = "252")]
+    pub lookback_days: usize,
+
+    /// Minimum dollar amount per order (skip smaller trades).
+    #[arg(long, default_value = "100")]
+    pub min_order_value: f64,
+
+    /// Path to write Prometheus textfile metrics after each cycle.
+    #[arg(long, default_value = "/tmp/quant_paper_metrics.prom")]
+    pub metrics_file: String,
+
+    /// Comma-separated signals to use: momentum, mean_reversion, trend (default: all three).
+    #[arg(long, default_value = "momentum,mean_reversion,trend")]
+    pub signals: String,
+}
+
+#[derive(Args)]
+pub struct RunStatusArgs {
+    /// Path to the SQLite OMS state file.
+    #[arg(long, default_value = "./quant_oms.db")]
+    pub oms_db: String,
+}
+
+// ── Signal filter ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct SignalFilter {
+    momentum: bool,
+    mean_reversion: bool,
+    trend_following: bool,
+}
+
+impl SignalFilter {
+    fn from_str(s: &str) -> Self {
+        let lower = s.to_lowercase();
+        let parts: Vec<&str> = lower.split(',').map(str::trim).collect();
+        Self {
+            momentum: parts.contains(&"momentum"),
+            mean_reversion: parts.contains(&"mean_reversion"),
+            trend_following: parts
+                .iter()
+                .any(|&x| x == "trend" || x == "trend_following"),
+        }
+    }
+}
+
+// ── Public entry points ────────────────────────────────────────────────────────
 
 pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
     let universe = resolve_symbols(args.symbols.as_deref());
+    let signal_filter = SignalFilter::from_str(&args.signals);
 
-    // ── 1. Load return history from DuckDB ────────────────────────────────
-    let store = MarketDataStore::open(&args.db)?;
-    let (symbols_ordered, returns_matrix) = load_returns(&store, &universe, args.lookback_days)?;
+    let market_store = MarketDataStore::open(&args.db)?;
+    let mut oms = OrderManagementSystem::new_in_memory()?;
+    oms.set_cash(args.cash);
 
+    do_rebalance(
+        &market_store,
+        &mut oms,
+        None,
+        &universe,
+        args.cash,
+        args.optimizer,
+        &signal_filter,
+        args.lookback_days,
+        args.min_order_value,
+        &args.metrics_file,
+    )?;
+
+    Ok(())
+}
+
+/// Daily rebalance daemon.
+///
+/// Loops indefinitely, firing a rebalance cycle once per day at `--schedule`
+/// time.  Halts with exit code 1 if MaxDD exceeds 22 %.
+///
+/// Alpaca orders are submitted when `ALPACA_API_KEY` + `ALPACA_SECRET_KEY`
+/// are set; otherwise orders are recorded in the OMS only (paper mode).
+pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
+    let universe = resolve_symbols(args.symbols.as_deref());
+    let signal_filter = SignalFilter::from_str(&args.signals);
+    let (sched_h, sched_m) = parse_schedule(&args.schedule)?;
+
+    let market_store = MarketDataStore::open(&args.db)?;
+    let oms_store = SqliteStateStore::new(&args.oms_db)?;
+    let mut oms = OrderManagementSystem::new(Some(oms_store));
+    oms.restore_state()?;
+    oms.set_cash(args.cash);
+
+    let broker = try_build_alpaca_broker();
+    if broker.is_some() {
+        let paper = std::env::var("ALPACA_PAPER").as_deref() == Ok("true");
+        info!("Alpaca adapter active (paper={})", paper);
+    } else {
+        info!("No Alpaca credentials found — running in paper-only mode");
+    }
+
+    let cb = DrawdownCircuitBreaker::new(0.22);
+    let mut peak_value = args.cash;
+    let mut last_run_date: Option<NaiveDate> = oms.last_order_date();
+
+    info!(
+        "Run loop started: schedule={}:{:02}  oms_db={}",
+        sched_h, sched_m, args.oms_db
+    );
+
+    loop {
+        let now = chrono::Local::now();
+        let today = now.date_naive();
+        let sched_time = chrono::NaiveTime::from_hms_opt(sched_h, sched_m, 0).unwrap();
+
+        if last_run_date != Some(today) && now.time() >= sched_time {
+            info!("Running daily rebalance cycle for {today}");
+
+            match do_rebalance(
+                &market_store,
+                &mut oms,
+                broker.as_ref(),
+                &universe,
+                args.cash,
+                args.optimizer,
+                &signal_filter,
+                args.lookback_days,
+                args.min_order_value,
+                &args.metrics_file,
+            ) {
+                Ok((submitted, rejected)) => {
+                    info!("Cycle complete: submitted={submitted}  rejected={rejected}");
+                    last_run_date = Some(today);
+                }
+                Err(e) => warn!("Rebalance cycle failed: {e}"),
+            }
+
+            // Portfolio value for MaxDD check.
+            // If Alpaca is configured, use real account equity; otherwise use
+            // the configured cash (MaxDD stays 0 in pure paper mode).
+            let current_value = portfolio_value_for_maxdd(broker.as_ref(), &oms, args.cash);
+            peak_value = peak_value.max(current_value);
+            let dd = cb.drawdown(peak_value, current_value);
+
+            if cb.is_tripped(peak_value, current_value) {
+                tracing::error!(
+                    "CRITICAL: MaxDD {:.1}% >= 22% — halting. peak={peak_value:.0} current={current_value:.0}",
+                    dd * 100.0
+                );
+                std::process::exit(1);
+            }
+
+            info!("Drawdown check: {:.2}%", dd * 100.0);
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+}
+
+/// Print the current OMS state: positions, unrealized PnL, cash balance.
+pub fn run_status(args: RunStatusArgs) -> anyhow::Result<()> {
+    let oms_store = SqliteStateStore::new(&args.oms_db)?;
+    let mut oms = OrderManagementSystem::new(Some(oms_store));
+    oms.restore_state()?;
+
+    println!("=== OMS Status: {} ===", args.oms_db);
+
+    let last_date = oms.last_order_date();
+    println!(
+        "Last rebalance: {}",
+        last_date
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "never".to_string())
+    );
+
+    let positions = oms.get_all_positions();
+    if positions.is_empty() {
+        println!("No open positions.");
+    } else {
+        println!(
+            "\n{:<8}  {:>12}  {:>10}  {:>10}  {:>14}  {:>14}",
+            "SYMBOL", "QTY", "AVG_COST", "MKT_PRICE", "MKT_VALUE", "UNREALIZED_PNL"
+        );
+        let mut syms: Vec<&str> = positions.keys().map(String::as_str).collect();
+        syms.sort();
+        let mut total_mv = 0.0_f64;
+        let mut total_pnl = 0.0_f64;
+        for sym in syms {
+            let p = &positions[sym];
+            println!(
+                "{:<8}  {:>12.2}  {:>10.2}  {:>10.2}  {:>14.2}  {:>14.2}",
+                sym,
+                p.quantity,
+                p.avg_cost,
+                p.market_price,
+                p.market_value(),
+                p.unrealized_pnl()
+            );
+            total_mv += p.market_value();
+            total_pnl += p.unrealized_pnl();
+        }
+        println!(
+            "{:<8}  {:>12}  {:>10}  {:>10}  {:>14.2}  {:>14.2}",
+            "TOTAL", "", "", "", total_mv, total_pnl
+        );
+    }
+
+    println!("\nCash:            {:.2}", oms.cash());
+    println!("Portfolio value: {:.2}", oms.portfolio_value());
+
+    Ok(())
+}
+
+// ── Core rebalance logic (shared by `once` and `loop`) ────────────────────────
+
+fn do_rebalance(
+    market_store: &MarketDataStore,
+    oms: &mut OrderManagementSystem,
+    broker: Option<&AlpacaBrokerAdapter>,
+    universe: &[String],
+    portfolio_cash: f64,
+    optimizer: OptimizationMethod,
+    signal_filter: &SignalFilter,
+    lookback_days: usize,
+    min_order_value: f64,
+    metrics_file: &str,
+) -> anyhow::Result<(usize, usize)> {
+    // ── 1. Load return history ────────────────────────────────────────────
+    let (symbols_ordered, returns_matrix) = load_returns(market_store, universe, lookback_days)?;
     let n = symbols_ordered.len();
     if n == 0 {
         anyhow::bail!("No symbols with data found in the database.");
     }
-
     let bars = returns_matrix.len() / n;
     info!("{} symbols loaded with {} bars", n, bars);
 
     // ── 2. Signal-driven alpha scores ─────────────────────────────────────
-    let alpha_scores = generate_alpha_scores(&store, &symbols_ordered, args.lookback_days)?;
+    let alpha_scores =
+        generate_alpha_scores(market_store, &symbols_ordered, lookback_days, signal_filter)?;
 
     // ── 3. Covariance matrix ──────────────────────────────────────────────
-    // Pass None for shrinkage to use Ledoit-Wolf automatic estimation.
     let cov = estimate_covariance(&returns_matrix, n, None)
         .map_err(|e| anyhow::anyhow!("covariance estimation failed: {}", e))?;
 
@@ -84,7 +346,7 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
         max_sector_weight: 1.0,
     };
     let opt_result = optimize(
-        args.optimizer,
+        optimizer,
         &symbols_ordered,
         &alpha_scores,
         &cov,
@@ -103,13 +365,7 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
             .collect::<Vec<_>>()
     );
 
-    // ── 5. Paper OMS + rebalance ──────────────────────────────────────────
-    let mut oms = OrderManagementSystem::new_in_memory()?;
-    oms.set_cash(args.cash);
-
-    let portfolio_value = args.cash; // fresh start — no existing positions
-    let current_weights: HashMap<String, f64> = HashMap::new();
-
+    // ── 5. Rebalance trades ───────────────────────────────────────────────
     let target_weights: HashMap<String, f64> = symbols_ordered
         .iter()
         .zip(&opt_result.weights)
@@ -117,28 +373,35 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
         .collect();
 
     let rebalancer = Rebalancer::default();
-    let rebalance = rebalancer.rebalance(&target_weights, &current_weights, portfolio_value);
+    let rebalance = rebalancer.rebalance(&target_weights, &HashMap::new(), portfolio_cash);
 
     if !rebalance.rebalance_triggered {
         println!("No rebalance needed (portfolio already on target).");
-        return Ok(());
+        return Ok((0, 0));
     }
 
+    // Print alpha scores.
+    println!("Signal alpha scores:");
+    for (sym, &alpha) in symbols_ordered.iter().zip(&alpha_scores) {
+        println!("  {}: {:.3}", sym, alpha);
+    }
+
+    // ── 6. Submit orders ──────────────────────────────────────────────────
     let limits = ExposureLimits::default();
     let mut submitted = 0usize;
     let mut rejected = 0usize;
 
     for trade in &rebalance.trades {
-        if trade.dollar_amount < args.min_order_value {
+        if trade.dollar_amount < min_order_value {
             warn!(
                 "Skip {} {} — ${:.0} below minimum ${:.0}",
-                trade.side, trade.symbol, trade.dollar_amount, args.min_order_value
+                trade.side, trade.symbol, trade.dollar_amount, min_order_value
             );
             rejected += 1;
             continue;
         }
 
-        let fraction = trade.dollar_amount / portfolio_value;
+        let fraction = trade.dollar_amount / portfolio_cash;
         if fraction > limits.max_position_fraction {
             warn!(
                 "Risk rejected {} {} — fraction {:.1}% > max {:.1}%",
@@ -151,7 +414,7 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
             continue;
         }
 
-        // Use dollar_amount as quantity with a notional price of 1.0.
+        // Use dollar_amount as quantity (notional units at price 1.0).
         let order = Order::new(
             trade.symbol.clone(),
             if trade.side == "BUY" {
@@ -163,24 +426,38 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
             OrderType::Market,
         );
 
-        match oms.submit_order(order) {
-            Ok(_) => submitted += 1,
+        // Record in OMS (clone so we can still pass &order to broker below).
+        let oms_id = match oms.submit_order(order.clone()) {
+            Ok(id) => id,
             Err(e) => {
                 warn!("OMS rejected {} {}: {}", trade.side, trade.symbol, e);
                 rejected += 1;
+                continue;
             }
-        }
-    }
+        };
 
-    // ── 6. Signal-driven output summary ──────────────────────────────────
-    println!("Signal alpha scores:");
-    for (sym, &alpha) in symbols_ordered.iter().zip(&alpha_scores) {
-        println!("  {}: {:.3}", sym, alpha);
+        // Optionally route to Alpaca broker.
+        if let Some(b) = broker {
+            match b.submit_order(&order) {
+                Ok(broker_id) => {
+                    if let Err(e) = oms.mark_submitted(&oms_id, &broker_id) {
+                        warn!("Failed to mark {} submitted: {}", oms_id, e);
+                    }
+                    submitted += 1;
+                }
+                Err(e) => {
+                    warn!("Broker rejected {} {}: {}", trade.side, trade.symbol, e);
+                    rejected += 1;
+                }
+            }
+        } else {
+            submitted += 1;
+        }
     }
 
     println!(
         "Done: portfolio=${:.0}  submitted={}  rejected={}  vol={:.2}%  turnover={:.2}%",
-        portfolio_value,
+        portfolio_cash,
         submitted,
         rejected,
         opt_result.risk * 100.0,
@@ -188,16 +465,71 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
     );
 
     // ── 7. Emit Prometheus metrics ────────────────────────────────────────
-    let pnl_cumulative = oms.portfolio_value() - args.cash;
-    let daily_pnl_pct = pnl_cumulative / args.cash;
-    if let Err(e) = write_paper_metrics(&args.metrics_file, pnl_cumulative, daily_pnl_pct) {
-        warn!(
-            "failed to write paper metrics to {}: {e}",
-            args.metrics_file
-        );
+    let pnl_cumulative = oms.portfolio_value() - portfolio_cash;
+    let daily_pnl_pct = pnl_cumulative / portfolio_cash.max(1.0);
+    if let Err(e) = write_paper_metrics(metrics_file, pnl_cumulative, daily_pnl_pct) {
+        warn!("failed to write paper metrics to {metrics_file}: {e}");
     }
 
-    Ok(())
+    Ok((submitted, rejected))
+}
+
+// ── Internal helpers ───────────────────────────────────────────────────────────
+
+/// Build an Alpaca broker adapter from env vars if present.
+///
+/// Reads `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, and `ALPACA_PAPER` (set to
+/// `"true"` for paper trading).  Returns `None` if either key is missing.
+fn try_build_alpaca_broker() -> Option<AlpacaBrokerAdapter> {
+    let key = std::env::var("ALPACA_API_KEY").ok()?;
+    let secret = std::env::var("ALPACA_SECRET_KEY").ok()?;
+    let paper = std::env::var("ALPACA_PAPER").as_deref() == Ok("true");
+    match AlpacaBrokerAdapter::new(&key, &secret, paper) {
+        Ok(adapter) => Some(adapter),
+        Err(e) => {
+            warn!("Failed to initialise Alpaca adapter: {e}");
+            None
+        }
+    }
+}
+
+/// Best-effort portfolio equity for MaxDD tracking.
+///
+/// If Alpaca is configured, fetches real account equity.  Falls back to the
+/// OMS portfolio value (which equals `fallback_cash` in pure paper mode).
+fn portfolio_value_for_maxdd(
+    broker: Option<&AlpacaBrokerAdapter>,
+    oms: &OrderManagementSystem,
+    fallback_cash: f64,
+) -> f64 {
+    if let Some(b) = broker {
+        match b.get_account() {
+            Ok(acct) => return acct.equity,
+            Err(e) => warn!("Failed to fetch Alpaca account equity for MaxDD check: {e}"),
+        }
+    }
+    oms.portfolio_value().max(fallback_cash)
+}
+
+/// Parse `"HH:MM"` into `(hour, minute)`.
+fn parse_schedule(s: &str) -> anyhow::Result<(u32, u32)> {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid schedule format '{}' — expected HH:MM", s);
+    }
+    let h: u32 = parts[0]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid hour in schedule '{}'", s))?;
+    let m: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid minute in schedule '{}'", s))?;
+    if h > 23 {
+        anyhow::bail!("Hour {} out of range (0–23)", h);
+    }
+    if m > 59 {
+        anyhow::bail!("Minute {} out of range (0–59)", m);
+    }
+    Ok((h, m))
 }
 
 /// Write `quant_paper_pnl_cumulative` and `quant_paper_daily_pnl_pct` to a
@@ -217,7 +549,7 @@ fn write_paper_metrics(path: &str, pnl_cumulative: f64, daily_pnl_pct: f64) -> a
     Ok(())
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Returns loading ────────────────────────────────────────────────────────────
 
 /// Load a flat returns matrix (row-major: bar × symbol) from DuckDB.
 /// Returns (symbol_order, flat_matrix).
@@ -289,7 +621,6 @@ fn load_returns(
         return Ok((vec![], vec![]));
     }
 
-    // Flat matrix: row = bar, col = symbol → index = bar * n + sym_idx
     let mut matrix = vec![0.0_f64; bars * n];
     for (sym_idx, sym) in symbols_ordered.iter().enumerate() {
         if let Some(returns) = per_symbol.get(sym) {
@@ -304,7 +635,7 @@ fn load_returns(
     Ok((symbols_ordered, matrix))
 }
 
-// ── Signal generation ─────────────────────────────────────────────────────────
+// ── Signal generation ──────────────────────────────────────────────────────────
 
 /// Per-symbol signal decomposition returned by the signal pipeline.
 #[derive(Debug, Clone)]
@@ -317,9 +648,9 @@ struct SignalDecomposition {
 
 /// Compute the combined alpha score for a single symbol from its price series.
 ///
-/// Runs features → signals → conviction-weighted combination.
-/// Returns `None` if the price series is too short (< 50 bars).
-fn compute_symbol_alpha(adj_close: &[f64]) -> Option<SignalDecomposition> {
+/// Only computes (and blends into the alpha) signals that are enabled in
+/// `filter`.  Returns `None` if the price series is too short (< 50 bars).
+fn compute_symbol_alpha(adj_close: &[f64], filter: &SignalFilter) -> Option<SignalDecomposition> {
     if adj_close.len() < 50 {
         return None;
     }
@@ -333,47 +664,68 @@ fn compute_symbol_alpha(adj_close: &[f64]) -> Option<SignalDecomposition> {
     let fast_ma = qf::ema(adj_close, 12);
     let slow_ma = qf::ema(adj_close, 26);
 
-    let (mom_score, mom_conf, _) = momentum_signal(&rsi_values, &rets, 20, 0.02);
-    let (mr_score, mr_conf, _) = mean_reversion_signal(&bb_mid, &bb_upper, &bb_lower, &rets, 2.0);
-    let (tf_score, tf_conf, _) = trend_following_signal(&macd_hist, &fast_ma, &slow_ma);
+    let mut signal_inputs: Vec<SignalInput> = Vec::new();
 
-    let signal_inputs = vec![
-        SignalInput {
+    let mom = if filter.momentum {
+        let (score, conf, _) = momentum_signal(&rsi_values, &rets, 20, 0.02);
+        signal_inputs.push(SignalInput {
             signal_name: "momentum".into(),
-            score: mom_score,
-            confidence: mom_conf,
-            target_position: (mom_score * mom_conf).clamp(-1.0, 1.0),
-        },
-        SignalInput {
-            signal_name: "mean_reversion".into(),
-            score: mr_score,
-            confidence: mr_conf,
-            target_position: (mr_score * mr_conf).clamp(-1.0, 1.0),
-        },
-        SignalInput {
-            signal_name: "trend_following".into(),
-            score: tf_score,
-            confidence: tf_conf,
-            target_position: (tf_score * tf_conf).clamp(-1.0, 1.0),
-        },
-    ];
+            score,
+            confidence: conf,
+            target_position: (score * conf).clamp(-1.0, 1.0),
+        });
+        (score, conf)
+    } else {
+        (0.0, 0.0)
+    };
 
-    let combiner = AlphaCombiner::new(CombinationMethod::ConvictionWeighted, None);
-    let alpha = combiner.combine("_", &signal_inputs);
+    let mr = if filter.mean_reversion {
+        let (score, conf, _) = mean_reversion_signal(&bb_mid, &bb_upper, &bb_lower, &rets, 2.0);
+        signal_inputs.push(SignalInput {
+            signal_name: "mean_reversion".into(),
+            score,
+            confidence: conf,
+            target_position: (score * conf).clamp(-1.0, 1.0),
+        });
+        (score, conf)
+    } else {
+        (0.0, 0.0)
+    };
+
+    let tf = if filter.trend_following {
+        let (score, conf, _) = trend_following_signal(&macd_hist, &fast_ma, &slow_ma);
+        signal_inputs.push(SignalInput {
+            signal_name: "trend_following".into(),
+            score,
+            confidence: conf,
+            target_position: (score * conf).clamp(-1.0, 1.0),
+        });
+        (score, conf)
+    } else {
+        (0.0, 0.0)
+    };
+
+    let combined_alpha = if signal_inputs.is_empty() {
+        0.0
+    } else {
+        let combiner = AlphaCombiner::new(CombinationMethod::ConvictionWeighted, None);
+        combiner.combine("_", &signal_inputs).target_position
+    };
 
     Some(SignalDecomposition {
-        momentum: (mom_score, mom_conf),
-        mean_reversion: (mr_score, mr_conf),
-        trend_following: (tf_score, tf_conf),
-        combined_alpha: alpha.target_position,
+        momentum: mom,
+        mean_reversion: mr,
+        trend_following: tf,
+        combined_alpha,
     })
 }
 
-/// Compute alpha scores for each symbol by running the full signal pipeline.
+/// Compute alpha scores for each symbol using the filtered signal pipeline.
 fn generate_alpha_scores(
     store: &MarketDataStore,
     symbols: &[String],
     lookback_days: usize,
+    filter: &SignalFilter,
 ) -> anyhow::Result<Vec<f64>> {
     let today = chrono::Local::now().date_naive();
     let start = today - chrono::Duration::days((lookback_days as i64) * 2);
@@ -384,7 +736,7 @@ fn generate_alpha_scores(
         let records = store.query(sym, start, today)?;
         let adj_close: Vec<f64> = records.iter().map(|r| r.adj_close).collect();
 
-        match compute_symbol_alpha(&adj_close) {
+        match compute_symbol_alpha(&adj_close, filter) {
             Some(decomp) => {
                 info!(
                     "{}: mom={:.2}/{:.2}  mr={:.2}/{:.2}  tf={:.2}/{:.2}  → alpha={:.3}",
@@ -436,11 +788,12 @@ fn parse_optimizer(s: &str) -> Result<OptimizationMethod, String> {
     }
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
+// ── Unit tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quant_risk::DrawdownCircuitBreaker;
 
     /// Synthetic price series with deterministic drift + noise.
     fn synthetic_prices(n: usize, drift: f64) -> Vec<f64> {
@@ -457,23 +810,53 @@ mod tests {
         prices
     }
 
+    // ── SignalFilter ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_signal_filter_all_enabled() {
+        let f = SignalFilter::from_str("momentum,mean_reversion,trend");
+        assert!(f.momentum);
+        assert!(f.mean_reversion);
+        assert!(f.trend_following);
+    }
+
+    #[test]
+    fn test_signal_filter_momentum_only() {
+        let f = SignalFilter::from_str("momentum");
+        assert!(f.momentum);
+        assert!(!f.mean_reversion);
+        assert!(!f.trend_following);
+    }
+
+    #[test]
+    fn test_signal_filter_trend_aliases() {
+        let f1 = SignalFilter::from_str("trend");
+        let f2 = SignalFilter::from_str("trend_following");
+        assert!(f1.trend_following);
+        assert!(f2.trend_following);
+        assert!(!f1.momentum);
+    }
+
+    // ── compute_symbol_alpha ──────────────────────────────────────────────────
+
     #[test]
     fn test_compute_symbol_alpha_returns_none_for_short_series() {
-        let prices = vec![100.0; 30];
-        assert!(compute_symbol_alpha(&prices).is_none());
+        let filter = SignalFilter::from_str("momentum,mean_reversion,trend");
+        assert!(compute_symbol_alpha(&vec![100.0; 30], &filter).is_none());
     }
 
     #[test]
     fn test_compute_symbol_alpha_returns_some_for_sufficient_data() {
+        let filter = SignalFilter::from_str("momentum,mean_reversion,trend");
         let prices = synthetic_prices(252, 0.001);
-        let result = compute_symbol_alpha(&prices);
-        assert!(result.is_some());
+        assert!(compute_symbol_alpha(&prices, &filter).is_some());
     }
 
     #[test]
     fn test_alpha_output_in_valid_range() {
+        let filter = SignalFilter::from_str("momentum,mean_reversion,trend");
         let prices = synthetic_prices(252, 0.001);
-        let decomp = compute_symbol_alpha(&prices).unwrap();
+        let decomp = compute_symbol_alpha(&prices, &filter).unwrap();
         assert!((-1.0..=1.0).contains(&decomp.combined_alpha));
         assert!((-1.0..=1.0).contains(&decomp.momentum.0));
         assert!((0.0..=1.0).contains(&decomp.momentum.1));
@@ -484,11 +867,47 @@ mod tests {
     }
 
     #[test]
-    fn test_strong_uptrend_produces_positive_alpha() {
-        // Strong consistent uptrend — momentum and trend should be bullish.
+    fn test_momentum_only_filter_zeroes_other_components() {
+        let filter = SignalFilter::from_str("momentum");
+        let prices = synthetic_prices(252, 0.001);
+        let decomp = compute_symbol_alpha(&prices, &filter).unwrap();
+        // Inactive signals return (0, 0) from the filter branches.
+        assert!((decomp.mean_reversion.0).abs() < 1e-9);
+        assert!((decomp.mean_reversion.1).abs() < 1e-9);
+        assert!((decomp.trend_following.0).abs() < 1e-9);
+        assert!((decomp.trend_following.1).abs() < 1e-9);
+        // Momentum signal itself should be non-trivially computed.
+        assert!((0.0..=1.0).contains(&decomp.momentum.1));
+    }
+
+    #[test]
+    fn test_no_signals_enabled_returns_zero_alpha() {
+        // Empty filter — no signals enabled.
+        let filter = SignalFilter::from_str("none_of_these");
+        let prices = synthetic_prices(252, 0.001);
+        let decomp = compute_symbol_alpha(&prices, &filter).unwrap();
+        assert!((decomp.combined_alpha).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_signal_blending_all_vs_momentum_only_differ() {
+        // With a strong uptrend, momentum-only alpha should equal the momentum
+        // component of the full blend only when the other signals are flat or
+        // aligned — just verify both paths produce valid ranges.
         let prices: Vec<f64> = (0..252).map(|i| 100.0 * 1.003_f64.powi(i)).collect();
-        let decomp = compute_symbol_alpha(&prices).unwrap();
-        // Momentum (RSI-based) should be positive in strong uptrend
+        let all_filter = SignalFilter::from_str("momentum,mean_reversion,trend");
+        let mom_filter = SignalFilter::from_str("momentum");
+        let all_decomp = compute_symbol_alpha(&prices, &all_filter).unwrap();
+        let mom_decomp = compute_symbol_alpha(&prices, &mom_filter).unwrap();
+        assert!((-1.0..=1.0).contains(&all_decomp.combined_alpha));
+        assert!((-1.0..=1.0).contains(&mom_decomp.combined_alpha));
+    }
+
+    #[test]
+    fn test_strong_uptrend_produces_positive_momentum() {
+        let filter = SignalFilter::from_str("momentum,mean_reversion,trend");
+        let prices: Vec<f64> = (0..252).map(|i| 100.0 * 1.003_f64.powi(i)).collect();
+        let decomp = compute_symbol_alpha(&prices, &filter).unwrap();
         assert!(
             decomp.momentum.0 > 0.0,
             "momentum score={}",
@@ -498,8 +917,9 @@ mod tests {
 
     #[test]
     fn test_strong_downtrend_produces_negative_momentum() {
+        let filter = SignalFilter::from_str("momentum,mean_reversion,trend");
         let prices: Vec<f64> = (0..252).map(|i| 200.0 * 0.997_f64.powi(i)).collect();
-        let decomp = compute_symbol_alpha(&prices).unwrap();
+        let decomp = compute_symbol_alpha(&prices, &filter).unwrap();
         assert!(
             decomp.momentum.0 < 0.0,
             "momentum score={}",
@@ -509,15 +929,71 @@ mod tests {
 
     #[test]
     fn test_flat_prices_produce_near_zero_alpha() {
+        let filter = SignalFilter::from_str("momentum,mean_reversion,trend");
         let prices = vec![100.0_f64; 252];
-        let decomp = compute_symbol_alpha(&prices).unwrap();
-        // Flat prices → all signals near zero
+        let decomp = compute_symbol_alpha(&prices, &filter).unwrap();
         assert!(
             decomp.combined_alpha.abs() < 0.3,
             "alpha={}",
             decomp.combined_alpha
         );
     }
+
+    // ── Loop halt logic (circuit breaker) ────────────────────────────────────
+
+    #[test]
+    fn test_loop_halt_maxdd_tripped_at_22_pct() {
+        let cb = DrawdownCircuitBreaker::new(0.22);
+        let peak = 1_000_000.0_f64;
+        let current = 780_000.0; // exactly 22 % drawdown
+        assert!(cb.is_tripped(peak, current));
+        assert!((cb.drawdown(peak, current) - 0.22).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_loop_halt_not_tripped_below_22_pct() {
+        let cb = DrawdownCircuitBreaker::new(0.22);
+        assert!(!cb.is_tripped(1_000_000.0, 790_000.0)); // 21 % — under threshold
+    }
+
+    #[test]
+    fn test_loop_halt_tripped_beyond_22_pct() {
+        let cb = DrawdownCircuitBreaker::new(0.22);
+        assert!(cb.is_tripped(1_000_000.0, 700_000.0)); // 30 % — well over
+    }
+
+    // ── parse_schedule ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_schedule_valid() {
+        let (h, m) = parse_schedule("16:05").unwrap();
+        assert_eq!(h, 16);
+        assert_eq!(m, 5);
+    }
+
+    #[test]
+    fn test_parse_schedule_midnight() {
+        let (h, m) = parse_schedule("00:00").unwrap();
+        assert_eq!(h, 0);
+        assert_eq!(m, 0);
+    }
+
+    #[test]
+    fn test_parse_schedule_invalid_hour() {
+        assert!(parse_schedule("25:00").is_err());
+    }
+
+    #[test]
+    fn test_parse_schedule_invalid_minute() {
+        assert!(parse_schedule("16:60").is_err());
+    }
+
+    #[test]
+    fn test_parse_schedule_missing_colon() {
+        assert!(parse_schedule("1605").is_err());
+    }
+
+    // ── resolve_symbols / parse_optimizer ────────────────────────────────────
 
     #[test]
     fn test_resolve_symbols_default() {

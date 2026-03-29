@@ -5,10 +5,12 @@
 //! # Subcommands
 //!
 //! ```
-//! quant ingest run   --db <path> [--mode full] [--start YYYY-MM-DD] [--symbols A,B]
+//! quant ingest run    --db <path> [--mode full] [--start YYYY-MM-DD] [--symbols A,B]
 //! quant ingest status --db <path>
-//! quant run once     --db <path> [--cash 1000000] [--optimizer risk_parity]
-//! quant backtest     --db <path> --symbol AAPL [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+//! quant run once      --db <path> [--cash 1000000] [--optimizer risk_parity] [--signals momentum,mean_reversion,trend]
+//! quant run loop      --db <path> --schedule 16:05 [--cash 1000000] [--optimizer risk_parity] [--oms-db ./quant_oms.db]
+//! quant run status    [--oms-db ./quant_oms.db]
+//! quant backtest      --db <path> --symbol AAPL [--start YYYY-MM-DD] [--end YYYY-MM-DD]
 //! ```
 
 mod cmd_backtest;
@@ -70,8 +72,12 @@ pub enum IngestAction {
 
 #[derive(Subcommand)]
 pub enum RunAction {
-    /// Execute a single strategy cycle.
+    /// Execute a single strategy cycle and exit.
     Once(cmd_run::RunOnceArgs),
+    /// Run the strategy as a daily rebalance daemon (loops forever).
+    Loop(cmd_run::RunLoopArgs),
+    /// Print the current OMS positions and unrealized PnL.
+    Status(cmd_run::RunStatusArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -92,6 +98,8 @@ fn main() -> anyhow::Result<()> {
         },
         Commands::Run { action } => match action {
             RunAction::Once(args) => cmd_run::run_once(args),
+            RunAction::Loop(args) => cmd_run::run_loop(args),
+            RunAction::Status(args) => cmd_run::run_status(args),
         },
         Commands::Backtest(args) => cmd_backtest::run_backtest_cmd(args),
         Commands::Benchmark { suite } => match suite {
