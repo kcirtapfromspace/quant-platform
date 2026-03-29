@@ -5,6 +5,7 @@ resources:
   - namespace.yaml
   - pvc.yaml
   - configmap.yaml
+  - nginx-frontend-cm.yaml
   - parameter-sweep-cronjob.yaml
   - paper-trading.yaml
   - deployment-quant-api.yaml
