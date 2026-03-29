@@ -89,9 +89,52 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 10
 
-        # ── Rust runE paper-trading daemon ──────────────────────────────────
-        # PENDING QUA-90: add run-e Rust sidecar here once QUA-87 (Alpaca creds) is resolved.
-        # run-e-state PVC is pre-allocated and ready (/app/data mount).
+        # ── Rust runE paper-trading daemon (QUA-90) ─────────────────────────
+        # Daily rebalance daemon: runs `quant run loop` at 16:05 ET.
+        # $100K notional (CEO option-A directive, 2026-03-29).
+        # OMS + state written to market-data PVC so quant-api can read them.
+        - name: run-e
+          image: ghcr.io/kcirtapfromspace/quant-rs:latest
+          imagePullPolicy: Always
+          command:
+            - /usr/local/bin/quant
+            - run
+            - loop
+            - --db
+            - /data/quant.duckdb
+            - --oms-db
+            - /data/quant_oms.db
+            - --cash
+            - "100000"
+            - --schedule
+            - "16:05"
+            - --state-file
+            - /data/run_e_state.json
+          env:
+            - name: ALPACA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: alpaca-credentials
+                  key: ALPACA_API_KEY
+            - name: ALPACA_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: alpaca-credentials
+                  key: ALPACA_SECRET_KEY
+            - name: ALPACA_PAPER
+              value: "true"
+          volumeMounts:
+            - name: market-data
+              mountPath: /data
+            - name: run-e-state
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
 
 ---
 apiVersion: v1
