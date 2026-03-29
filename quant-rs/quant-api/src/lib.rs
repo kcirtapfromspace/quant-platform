@@ -95,9 +95,19 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     let api_routes = Router::new()
         .route("/portfolio", get(routes::portfolio::get_portfolio))
+        .route(
+            "/portfolio/history",
+            get(routes::portfolio::get_portfolio_history),
+        )
         .route("/orders", get(routes::orders::get_orders))
         .route("/risk", get(routes::risk::get_risk))
+        .route("/risk/snapshot", get(routes::risk::get_risk_snapshot))
         .route("/signals", get(routes::signals::get_signals))
+        .route("/strategies", get(routes::strategies::get_strategies))
+        .route(
+            "/history/:symbol",
+            get(routes::market::get_history),
+        )
         .route(
             "/backtest/latest",
             get(routes::backtest::get_backtest_latest),

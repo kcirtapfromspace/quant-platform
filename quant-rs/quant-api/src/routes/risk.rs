@@ -70,6 +70,46 @@ pub async fn get_risk(State(state): State<Arc<AppState>>) -> ApiResult<Json<Risk
     }))
 }
 
+/// Frontend-shaped risk snapshot (matches the `RiskSnapshot` TypeScript interface).
+#[derive(Serialize)]
+pub struct RiskSnapshotView {
+    pub var95: f64,
+    pub var99: f64,
+    pub drawdown: f64,
+    pub max_drawdown: f64,
+    pub circuit_breaker_armed: bool,
+    pub position_limit_utilization: Vec<PositionLimitEntry>,
+}
+
+#[derive(Serialize)]
+pub struct PositionLimitEntry {
+    pub symbol: String,
+    pub utilization: f64,
+}
+
+pub async fn get_risk_snapshot(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<RiskSnapshotView>> {
+    let metrics_file = state.metrics_file.clone();
+
+    let prom = tokio::task::spawn_blocking(move || {
+        std::fs::read_to_string(&metrics_file).unwrap_or_default()
+    })
+    .await?;
+
+    let max_dd = parse_prom_gauge(&prom, "quant_max_drawdown").unwrap_or(0.0);
+    let drawdown = parse_prom_gauge(&prom, "quant_current_drawdown").unwrap_or(max_dd);
+
+    Ok(Json(RiskSnapshotView {
+        var95: 0.0,
+        var99: 0.0,
+        drawdown,
+        max_drawdown: max_dd,
+        circuit_breaker_armed: max_dd.abs() >= 0.08,
+        position_limit_utilization: vec![],
+    }))
+}
+
 /// Extract the scalar value of a gauge metric from a Prometheus textfile.
 fn parse_prom_gauge(text: &str, name: &str) -> Option<f64> {
     text.lines()

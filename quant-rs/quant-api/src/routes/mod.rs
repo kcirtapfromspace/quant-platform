@@ -5,3 +5,4 @@ pub mod orders;
 pub mod portfolio;
 pub mod risk;
 pub mod signals;
+pub mod strategies;

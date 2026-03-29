@@ -29,7 +29,7 @@ pub async fn get_signals(State(state): State<Arc<AppState>>) -> ApiResult<Json<V
     let db_path = state.db_path.clone();
 
     let signals = tokio::task::spawn_blocking(move || {
-        let store = quant_data::MarketDataStore::open(&db_path)?;
+        let store = quant_data::MarketDataStore::open_read_only(&db_path)?;
         let symbols = store.symbols()?;
 
         let end = chrono::Local::now().date_naive();

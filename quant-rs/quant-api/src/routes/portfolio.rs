@@ -4,6 +4,21 @@ use std::sync::Arc;
 
 use crate::{error::ApiResult, AppState};
 
+/// Portfolio equity curve point for the frontend history chart.
+#[derive(Serialize)]
+pub struct EquityPoint {
+    pub time: i64,
+    pub value: f64,
+}
+
+/// Returns the daily portfolio equity curve.
+/// Returns empty until Day 1 data accumulates in DuckDB.
+pub async fn get_portfolio_history(
+    State(_state): State<Arc<AppState>>,
+) -> ApiResult<Json<Vec<EquityPoint>>> {
+    Ok(Json(vec![]))
+}
+
 #[derive(Serialize)]
 pub struct PositionView {
     pub symbol: String,
