@@ -51,7 +51,7 @@ spec:
             - name: QUANT_DB_PATH
               value: /data/quant.duckdb
             - name: OMS_DB_PATH
-              value: /data/oms.db
+              value: /data/quant_oms.db
             - name: METRICS_PATH
               value: /data/metrics.prom
             - name: BACKTEST_RESULTS_DIR
