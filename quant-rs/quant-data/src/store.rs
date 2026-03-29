@@ -52,7 +52,7 @@ impl MarketDataStore {
     pub fn open_read_only(db_path: impl AsRef<Path>) -> Result<Self, DataError> {
         let config = Config::default()
             .access_mode(AccessMode::ReadOnly)
-            .map_err(|e| DataError::DuckDb(e))?;
+            .map_err(DataError::DuckDb)?;
         let conn = Connection::open_with_flags(db_path, config)?;
         Ok(Self { conn })
     }
