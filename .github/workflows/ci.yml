@@ -13,10 +13,11 @@ concurrency:
 jobs:
   # ---------------------------------------------------------------------------
   # Rust — fmt, clippy, and tests for all workspace crates
+  # Runs on self-hosted ARM64 runner (Turing Pi cluster, native, no QEMU).
   # ---------------------------------------------------------------------------
   rust:
     name: Rust
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64]
     defaults:
       run:
         working-directory: quant-rs
