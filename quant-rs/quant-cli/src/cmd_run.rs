@@ -197,7 +197,9 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
 /// Daily rebalance daemon.
 ///
 /// Loops indefinitely, firing a rebalance cycle once per day at `--schedule`
-/// time.  Halts with exit code 1 if MaxDD exceeds 22 %.
+/// time.  Halts with exit code 1 if:
+/// - MaxDD from peak exceeds `QUANT_DD_CIRCUIT_BREAKER` (default 8 %)
+/// - Daily P&L drops below `QUANT_DAILY_PNL_HALT` (default -3 % of day-start value)
 ///
 /// Alpaca orders are submitted when `ALPACA_API_KEY` + `ALPACA_SECRET_KEY`
 /// are set; otherwise orders are recorded in the OMS only (paper mode).
@@ -220,13 +222,26 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
         info!("No Alpaca credentials found — running in paper-only mode");
     }
 
-    let cb = DrawdownCircuitBreaker::new(0.22);
+    let dd_threshold: f64 = std::env::var("QUANT_DD_CIRCUIT_BREAKER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.08);
+    let daily_pnl_halt: f64 = std::env::var("QUANT_DAILY_PNL_HALT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-0.03);
+
+    let cb = DrawdownCircuitBreaker::new(dd_threshold);
     let mut peak_value = args.cash;
     let mut last_run_date: Option<NaiveDate> = oms.last_order_date();
 
     info!(
-        "Run loop started: schedule={}:{:02}  oms_db={}",
-        sched_h, sched_m, args.oms_db
+        "Run loop started: schedule={}:{:02}  oms_db={}  dd_threshold={:.1}%  daily_pnl_halt={:.1}%",
+        sched_h,
+        sched_m,
+        args.oms_db,
+        dd_threshold * 100.0,
+        daily_pnl_halt * 100.0,
     );
 
     loop {
@@ -236,6 +251,9 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
 
         if last_run_date != Some(today) && now.time() >= sched_time {
             info!("Running daily rebalance cycle for {today}");
+
+            // Snapshot portfolio value at start of this day's cycle for P&L halt check.
+            let day_start_value = portfolio_value_for_maxdd(broker.as_ref(), &oms, args.cash);
 
             match do_rebalance(
                 &market_store,
@@ -259,22 +277,43 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
                 Err(e) => warn!("Rebalance cycle failed: {e}"),
             }
 
-            // Portfolio value for MaxDD check.
+            // Portfolio value for MaxDD and daily P&L checks.
             // If Alpaca is configured, use real account equity; otherwise use
-            // the configured cash (MaxDD stays 0 in pure paper mode).
+            // the configured cash (checks stay 0 in pure paper mode).
             let current_value = portfolio_value_for_maxdd(broker.as_ref(), &oms, args.cash);
             peak_value = peak_value.max(current_value);
             let dd = cb.drawdown(peak_value, current_value);
 
-            if cb.is_tripped(peak_value, current_value) {
+            // Daily P&L halt check.
+            let daily_return = if day_start_value > 0.0 {
+                (current_value - day_start_value) / day_start_value
+            } else {
+                0.0
+            };
+            if daily_return < daily_pnl_halt {
                 tracing::error!(
-                    "CRITICAL: MaxDD {:.1}% >= 22% — halting. peak={peak_value:.0} current={current_value:.0}",
-                    dd * 100.0
+                    "CRITICAL: daily P&L {:.2}% < {:.1}% halt threshold — halting. day_start={day_start_value:.0} current={current_value:.0}",
+                    daily_return * 100.0,
+                    daily_pnl_halt * 100.0,
                 );
                 std::process::exit(1);
             }
 
-            info!("Drawdown check: {:.2}%", dd * 100.0);
+            // Drawdown circuit breaker check.
+            if cb.is_tripped(peak_value, current_value) {
+                tracing::error!(
+                    "CRITICAL: MaxDD {:.1}% >= {:.1}% circuit breaker — halting. peak={peak_value:.0} current={current_value:.0}",
+                    dd * 100.0,
+                    dd_threshold * 100.0,
+                );
+                std::process::exit(1);
+            }
+
+            info!(
+                "Risk checks: drawdown={:.2}%  daily_pnl={:.2}%",
+                dd * 100.0,
+                daily_return * 100.0,
+            );
         }
 
         std::thread::sleep(std::time::Duration::from_secs(60));
