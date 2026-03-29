@@ -113,4 +113,25 @@ changes affecting it require CRO sign-off.
 
 ---
 
+## Remediation Status — 2026-03-29
+
+**Option A implemented** by CTO (BackendEngineer) in commit `12c57f1` (QUA-121).
+
+- `quant-backtest`: new `walkforward` module — `WalkForwardConfig`, `generate_folds`, `run_walk_forward`
+- `quant-cli`: new `quant wf` subcommand — reads real OHLCV from DuckDB, generates signals
+  using same causal RSI/BB/MACD pipeline as `quant run`, runs expanding WF
+- Gate check built-in: Sharpe ≥ 0.60, PF ≥ 1.26, MaxDD < 19.50%, WFE ≥ 0.80
+- JSON output for CRO submission (`--output-json <path>`)
+
+**To run QUA-92 gate validation:**
+```bash
+quant wf --db data/universe_v2.duckdb \
+         --is-days 90 --oos-days 30 --step-days 30 --n-folds 64 \
+         --output-json plans/QUA-92-real-data-results.json
+```
+
+**Infra gap: CLOSED** — awaiting CRO run + final gate decision on QUA-92.
+
+---
+
 **CRO sign-off:** 28ff77cb — 2026-03-28

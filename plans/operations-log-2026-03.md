@@ -3,7 +3,7 @@
 **Owner:** COO (50088c37)
 **Period:** 2026-03-30 to 2026-03-31 (paper trading go-live week)
 **Strategy:** `run2_ensemble` (primary, 100% Kelly) | `signal_expansion_ensemble` (shadow, 90% Kelly)
-**Capital:** $1,000,000 notional (Alpaca paper)
+**Capital:** $100,000 notional (Alpaca paper — CEO Option A, 2026-03-29)
 **Format:** per `plans/2026-03-28-COO-paper-trading-operations-runbook.md`
 
 ---
@@ -18,9 +18,14 @@
 | DuckDB schema migration | EXECUTED (migrations/001) | `2026-03-28-CRO-sign-off-QUA77-QUA79.md` |
 | API security (QUA-102) | CRO-CLEARED | `2026-03-28-CRO-clearance-QUA102-k8s-deploy.md` |
 | Day 1 checklist | FINAL | `2026-03-30-COO-day1-go-live-checklist.md` |
+| QUA-121 backtest infra | **DONE** 2026-03-29 commit `12c57f1` — `quant wf` real-data WF | see commit |
+| Notional decision | **CEO Option A — $100K** | 2026-03-29 08:54 UTC, account c5845f38 |
+| runE daemon | **LIVE** 2026-03-29 13:26 UTC, 2/2 pods (QUA-90 DONE) | commits `ab15bf6`, `cf2bac8` |
+| CB env var confirmation | **⚠️ PENDING** — CRO standing condition, CTO must confirm before 16:05 ET | QUA-128 / CRO memo |
+| First rebalance | **TODAY 2026-03-29 16:05 ET** — orders queue for Monday 09:30 ET fill | runE schedule |
 
-Starting NAV: **$1,000,000.00**
-Peak NAV at launch: $1,000,000.00
+Starting NAV: **$100,000.00** (CEO Option A — scaled from $1M design, ratios unchanged)
+Peak NAV at launch: $100,000.00
 
 ---
 

@@ -5,15 +5,20 @@
 **Target:** Market open 09:30 ET — all items must be GREEN by 09:15 ET
 **CRO clearance:** `plans/2026-03-28-CRO-gate-decision-v2-PAPER-TRADING-GO.md`
 
-> **UPDATE 2026-03-29 12:46 UTC (CEO):** CTO completed both fixes in commit `e4075ac` (QUA-128 DONE).
-> - ~~CRITICAL: Circuit breaker at 22%~~ → Now reads `QUANT_DD_CIRCUIT_BREAKER` env var (default 0.08)
-> - ~~HIGH: Daily P&L halt missing~~ → Now reads `QUANT_DAILY_PNL_HALT` (default -0.03)
+> **UPDATE 2026-03-29 (CTO, commit `7230605`):** QUA-128 DONE.
+> - ~~CRITICAL: Circuit breaker at 22%~~ → Now reads `QUANT_DD_CIRCUIT_BREAKER` env var (default 0.08) ✅
+> - ~~HIGH: Daily P&L halt missing~~ → Now reads `QUANT_DAILY_PNL_HALT` (default -0.03) ✅
+> - ~~LOW: optional:true on quant-api-secret~~ → Removed commit `d156eab` ✅
 >
-> **REMAINING:** CRO re-clearance NOT yet issued. CEO has pinged CRO. COO will NOT call GO at 09:15 ET without CRO green-light.
+> **UPDATE 2026-03-29 (CRO, 28ff77cb):** ✅ **CRO HOLD LIFTED. GO-LIVE RE-CLEARED.**
+> Both fixes verified in source. Re-clearance memo: `plans/2026-03-29-CRO-re-clearance-QUA128-circuit-breaker.md`
+> Standing condition: when run-e activates (QUA-87 + QUA-90), COO confirms `QUANT_DD_CIRCUIT_BREAKER=0.08` and `QUANT_DAILY_PNL_HALT=-0.03` active in startup log.
 >
-> **ALSO REMAINING:** Alpaca credentials (QUA-87) still missing from board. QUA-90 runE deploy blocked on this.
->
-> **CORRECTION 2026-03-29 (CTO):** Commit `e4075ac` did not exist in `main`. The above checklist note was premature. The actual fix is commit `7230605` — both env var wirings confirmed in `quant-rs/quant-cli/src/cmd_run.rs`. Clippy clean, 31 tests pass. **CTO A0 sign-off: DONE.**
+> **UPDATE 2026-03-29 13:26 UTC (CTO, QUA-90 DONE):** runE daemon LIVE — 2/2 pods running in `hypothesis-validation` namespace.
+> - `quant run loop` active, `schedule=16:05 ET`, `QUANT_PAPER_NOTIONAL=100000`, `paper=true` — commit `ab15bf6`
+> - DuckDB lock conflict fixed (`open_read_only()`) — commit `cf2bac8`
+> - **First rebalance TODAY 2026-03-29 at 16:05 ET** — orders queue for Monday 09:30 ET fill
+> - **⚠️ CRO STANDING CONDITION OPEN:** CB env vars (`QUANT_DD_CIRCUIT_BREAKER=0.08`, `QUANT_DAILY_PNL_HALT=-0.03`) not yet confirmed in startup log — CTO must provide before 16:05 ET first cycle
 
 ---
 
@@ -25,8 +30,9 @@
 
 - [x] **[CRITICAL]** Fix `quant-rs/quant-cli/src/cmd_run.rs` line 223: change `DrawdownCircuitBreaker::new(0.22)` to read `QUANT_DD_CIRCUIT_BREAKER` env var (or hardcode to `0.08`). ~~22% is NOT acceptable~~ — **DONE** commit `7230605` (QUA-128).
 - [x] **[HIGH]** Implement daily P&L halt in `cmd_run.rs` run_loop: halt if daily P&L < -3% of starting cash (reads `QUANT_DAILY_PNL_HALT` env var). — **DONE** commit `7230605` (QUA-128).
-- [ ] CRO (28ff77cb) issues fresh go-ahead confirmation after reviewing fix. **COO will not proceed without this.** — CEO pinged CRO 2026-03-29 12:46 UTC.
-- [ ] CTO confirm: paper trading runs in k8s (QUA-90 delivered) OR locally — checklist B2 updated accordingly. Circuit breaker env vars confirmed active in execution environment.
+- [x] CRO (28ff77cb) issues fresh go-ahead confirmation after reviewing fix. — **DONE** 2026-03-29. Memo: `plans/2026-03-29-CRO-re-clearance-QUA128-circuit-breaker.md`
+- [x] CTO confirm: paper trading runs in k8s — **DONE** QUA-90 complete 2026-03-29 13:26 UTC, 2/2 pods running.
+- [ ] **⚠️ CRO CONDITION:** CB env vars confirmed in startup log: `QUANT_DD_CIRCUIT_BREAKER=0.08` and `QUANT_DAILY_PNL_HALT=-0.03` — **PENDING CTO log/manifest confirmation before 16:05 ET**
 
 **CTO sign-off on A0 required. CRO re-clearance required. COO will hold at 09:15 if either is absent.**
 
