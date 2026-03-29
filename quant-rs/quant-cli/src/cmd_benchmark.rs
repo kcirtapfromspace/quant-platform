@@ -819,9 +819,15 @@ fn run_qua92_wf_symbol(
         }
         let is_start = oos_start.saturating_sub(train_window);
 
-        result.a_is_sh.push(sharpe_ratio(&a_net[is_start..oos_start]));
-        result.b_is_sh.push(sharpe_ratio(&b_net[is_start..oos_start]));
-        result.c_is_sh.push(sharpe_ratio(&c_net[is_start..oos_start]));
+        result
+            .a_is_sh
+            .push(sharpe_ratio(&a_net[is_start..oos_start]));
+        result
+            .b_is_sh
+            .push(sharpe_ratio(&b_net[is_start..oos_start]));
+        result
+            .c_is_sh
+            .push(sharpe_ratio(&c_net[is_start..oos_start]));
 
         let oos_prices = &prices[oos_start..=oos_end];
 
@@ -884,8 +890,7 @@ pub fn run_benchmark_qua92(args: BenchmarkQua92Args) -> anyhow::Result<()> {
 
     for sym in 0..args.n_symbols {
         // Same seed formula as QUA-68 for identical synthetic universe
-        let seed = 0xDEAD_BEEF_u64
-            .wrapping_add((sym as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let seed = 0xDEAD_BEEF_u64.wrapping_add((sym as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let prices = synthetic_prices(total_bars, seed);
         let r = run_qua92_wf_symbol(
             &prices,
@@ -1042,7 +1047,10 @@ pub fn run_benchmark_qua92(args: BenchmarkQua92Args) -> anyhow::Result<()> {
     if b_pf_v > a_pf_v {
         println!("  → PF improvement confirmed (+{:.3})", b_pf_v - a_pf_v);
     } else {
-        println!("  → PF did NOT improve vs Run A ({:.3} vs {:.3})", b_pf_v, a_pf_v);
+        println!(
+            "  → PF did NOT improve vs Run A ({:.3} vs {:.3})",
+            b_pf_v, a_pf_v
+        );
         println!("     CRO will reject vol sleeve per gate-decision rules.");
     }
 
@@ -1103,11 +1111,27 @@ pub fn run_benchmark_qua92(args: BenchmarkQua92Args) -> anyhow::Result<()> {
         | MaxDD | < 19.50% | {} |\n\
         | WFE | >= 0.80 | {} |\n\
         | Run C Sharpe (alpha check) | >= 0.50 | {} |\n",
-        a_sharpe, fmt_pf(a_pf), a_wfe, a_maxdd * 100.0, n_folds_actual,
-        if a_sharpe >= 0.60 && a_pf_v >= 1.10 && a_maxdd < 0.20 && a_wfe >= 0.20 { "PASS" } else { "FAIL" },
-        b_sharpe, fmt_pf(b_pf), b_wfe, b_maxdd * 100.0, b_oos_sh.len(),
+        a_sharpe,
+        fmt_pf(a_pf),
+        a_wfe,
+        a_maxdd * 100.0,
+        n_folds_actual,
+        if a_sharpe >= 0.60 && a_pf_v >= 1.10 && a_maxdd < 0.20 && a_wfe >= 0.20 {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        b_sharpe,
+        fmt_pf(b_pf),
+        b_wfe,
+        b_maxdd * 100.0,
+        b_oos_sh.len(),
         if all_pass { "PASS" } else { "FAIL" },
-        c_sharpe, fmt_pf(c_pf), c_wfe, c_maxdd * 100.0, c_oos_sh.len(),
+        c_sharpe,
+        fmt_pf(c_pf),
+        c_wfe,
+        c_maxdd * 100.0,
+        c_oos_sh.len(),
         if gate_c_sharpe { "PASS" } else { "FAIL" },
         if gate_sharpe { "PASS" } else { "FAIL" },
         if gate_pf { "PASS" } else { "FAIL" },
@@ -1118,10 +1142,7 @@ pub fn run_benchmark_qua92(args: BenchmarkQua92Args) -> anyhow::Result<()> {
 
     fs::write(out_dir.join("validation_table.md"), md)?;
 
-    println!(
-        "\n  Results written to {}/",
-        args.output_dir
-    );
+    println!("\n  Results written to {}/", args.output_dir);
 
     Ok(())
 }

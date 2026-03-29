@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use clap::Args;
 use tracing::{info, warn};
 
@@ -68,6 +68,11 @@ pub struct RunOnceArgs {
     /// Comma-separated signals to use: momentum, mean_reversion, trend (default: all three).
     #[arg(long, default_value = "momentum,mean_reversion,trend")]
     pub signals: String,
+
+    /// Path to write per-sleeve strategy state JSON (read by the dashboard).
+    /// Skipped when not set.
+    #[arg(long)]
+    pub state_file: Option<String>,
 }
 
 #[derive(Args)]
@@ -111,6 +116,11 @@ pub struct RunLoopArgs {
     /// Comma-separated signals to use: momentum, mean_reversion, trend (default: all three).
     #[arg(long, default_value = "momentum,mean_reversion,trend")]
     pub signals: String,
+
+    /// Path to write per-sleeve strategy state JSON (read by the dashboard).
+    /// Skipped when not set.
+    #[arg(long)]
+    pub state_file: Option<String>,
 }
 
 #[derive(Args)]
@@ -137,6 +147,8 @@ struct RebalanceConfig<'a> {
     lookback_days: usize,
     min_order_value: f64,
     metrics_file: &'a str,
+    /// Path to write `run_e_state.json` for the dashboard.  `None` = skip.
+    state_file: Option<&'a str>,
 }
 
 impl SignalFilter {
@@ -175,6 +187,7 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
             lookback_days: args.lookback_days,
             min_order_value: args.min_order_value,
             metrics_file: &args.metrics_file,
+            state_file: args.state_file.as_deref(),
         },
     )?;
 
@@ -236,6 +249,7 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
                     lookback_days: args.lookback_days,
                     min_order_value: args.min_order_value,
                     metrics_file: &args.metrics_file,
+                    state_file: args.state_file.as_deref(),
                 },
             ) {
                 Ok((submitted, rejected)) => {
@@ -340,7 +354,7 @@ fn do_rebalance(
     info!("{} symbols loaded with {} bars", n, bars);
 
     // ── 2. Signal-driven alpha scores ─────────────────────────────────────
-    let alpha_scores = generate_alpha_scores(
+    let (alpha_scores, decomps) = generate_alpha_scores(
         market_store,
         &symbols_ordered,
         config.lookback_days,
@@ -509,6 +523,15 @@ fn do_rebalance(
         );
     }
 
+    // ── 8. Write run_e_state.json for the dashboard ───────────────────────
+    if let Some(state_path) = config.state_file {
+        if let Err(e) =
+            write_run_e_state(state_path, &decomps, config.signal_filter, sharpe_30d, pf)
+        {
+            warn!("failed to write run_e_state to {state_path}: {e}");
+        }
+    }
+
     Ok((submitted, rejected))
 }
 
@@ -618,8 +641,124 @@ fn write_paper_metrics(
          # TYPE quant_paper_position_weight gauge\n"
     )?;
     for (symbol, weight) in position_weights {
-        writeln!(f, "quant_paper_position_weight{{symbol=\"{symbol}\"}} {weight}")?;
+        writeln!(
+            f,
+            "quant_paper_position_weight{{symbol=\"{symbol}\"}} {weight}"
+        )?;
     }
+    Ok(())
+}
+
+/// Write per-sleeve strategy state as JSON for the React dashboard.
+///
+/// Produces `{ "timestamp": "...", "strategies": [...] }` at `path`.
+/// One entry per active signal sleeve.  Fields match the `StrategyState`
+/// TypeScript interface in `demo/server/index.ts` so `loadRunEState()` can
+/// parse it directly.
+fn write_run_e_state(
+    path: &str,
+    decomps: &[SignalDecomposition],
+    filter: &SignalFilter,
+    sharpe_30d: Option<f64>,
+    pf: Option<f64>,
+) -> anyhow::Result<()> {
+    use serde::Serialize;
+    use std::io::Write as _;
+
+    #[derive(Serialize)]
+    struct SleeveState {
+        strategy_key: &'static str,
+        name: &'static str,
+        status: &'static str,
+        regime: String,
+        signal_confidence: f64,
+        daily_pnl: f64,
+        positions: usize,
+        category: &'static str,
+    }
+
+    let n = decomps.len();
+
+    fn sleeve(
+        strategy_key: &'static str,
+        name: &'static str,
+        category: &'static str,
+        enabled: bool,
+        pairs: &[(f64, f64)],
+    ) -> SleeveState {
+        if !enabled {
+            return SleeveState {
+                strategy_key,
+                name,
+                status: "halted",
+                regime: "sideways".to_string(),
+                signal_confidence: 0.0,
+                daily_pnl: 0.0,
+                positions: 0,
+                category,
+            };
+        }
+        let n = pairs.len().max(1);
+        let avg_conf = pairs.iter().map(|&(_, c)| c).sum::<f64>() / n as f64;
+        let avg_signal = pairs.iter().map(|&(s, c)| s * c).sum::<f64>() / n as f64;
+        let positions = pairs.iter().filter(|&&(s, c)| s * c > 0.05).count();
+        let regime = if avg_signal > 0.10 {
+            "bull"
+        } else if avg_signal < -0.10 {
+            "bear"
+        } else {
+            "sideways"
+        };
+        SleeveState {
+            strategy_key,
+            name,
+            status: "active",
+            regime: regime.to_string(),
+            signal_confidence: avg_conf.clamp(0.0, 1.0),
+            daily_pnl: 0.0,
+            positions,
+            category,
+        }
+    }
+
+    let mom_pairs: Vec<(f64, f64)> = decomps.iter().map(|d| d.momentum).collect();
+    let mr_pairs: Vec<(f64, f64)> = decomps.iter().map(|d| d.mean_reversion).collect();
+    let tf_pairs: Vec<(f64, f64)> = decomps.iter().map(|d| d.trend_following).collect();
+
+    let strategies = vec![
+        sleeve(
+            "momentum_us_equity",
+            "Momentum US Equity",
+            "Time-series",
+            filter.momentum,
+            &mom_pairs,
+        ),
+        sleeve(
+            "mean_reversion_us_equity",
+            "Mean Reversion US Equity",
+            "Time-series",
+            filter.mean_reversion,
+            &mr_pairs,
+        ),
+        sleeve(
+            "trend_following_us_equity",
+            "Trend Following US Equity",
+            "Time-series",
+            filter.trend_following,
+            &tf_pairs,
+        ),
+    ];
+
+    let state = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "sharpe_30d": sharpe_30d,
+        "profit_factor": pf,
+        "n_symbols": n,
+        "strategies": strategies,
+    });
+
+    let mut f = std::fs::File::create(path)?;
+    write!(f, "{}", serde_json::to_string_pretty(&state)?)?;
     Ok(())
 }
 
@@ -795,16 +934,20 @@ fn compute_symbol_alpha(adj_close: &[f64], filter: &SignalFilter) -> Option<Sign
 }
 
 /// Compute alpha scores for each symbol using the filtered signal pipeline.
+///
+/// Returns both the combined alpha vector (used by the optimizer) and the
+/// per-symbol `SignalDecomposition` slice (used by `write_run_e_state`).
 fn generate_alpha_scores(
     store: &MarketDataStore,
     symbols: &[String],
     lookback_days: usize,
     filter: &SignalFilter,
-) -> anyhow::Result<Vec<f64>> {
+) -> anyhow::Result<(Vec<f64>, Vec<SignalDecomposition>)> {
     let today = chrono::Local::now().date_naive();
     let start = today - chrono::Duration::days((lookback_days as i64) * 2);
 
     let mut alpha_scores = Vec::with_capacity(symbols.len());
+    let mut decomps = Vec::with_capacity(symbols.len());
 
     for sym in symbols {
         let records = store.query(sym, start, today)?;
@@ -824,6 +967,7 @@ fn generate_alpha_scores(
                     decomp.combined_alpha,
                 );
                 alpha_scores.push(decomp.combined_alpha);
+                decomps.push(decomp);
             }
             None => {
                 info!(
@@ -832,11 +976,17 @@ fn generate_alpha_scores(
                     adj_close.len()
                 );
                 alpha_scores.push(0.0);
+                decomps.push(SignalDecomposition {
+                    momentum: (0.0, 0.0),
+                    mean_reversion: (0.0, 0.0),
+                    trend_following: (0.0, 0.0),
+                    combined_alpha: 0.0,
+                });
             }
         }
     }
 
-    Ok(alpha_scores)
+    Ok((alpha_scores, decomps))
 }
 
 fn resolve_symbols(arg: Option<&str>) -> Vec<String> {
@@ -889,8 +1039,7 @@ fn rolling_sharpe(returns: &[f64], window: usize, min_samples: usize) -> Option<
     }
     let n = slice.len() as f64;
     let mean: f64 = slice.iter().sum::<f64>() / n;
-    let var: f64 =
-        slice.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
+    let var: f64 = slice.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
     let std = var.sqrt();
     if std < 1e-12 {
         return None;
@@ -1069,7 +1218,7 @@ mod tests {
         let matrix = vec![
             0.01, 0.02, // bar 0: sym0=+1%, sym1=+2%
             -0.01, 0.0, // bar 1: sym0=-1%, sym1=0%
-            0.0, 0.03,  // bar 2: sym0=0%, sym1=+3%
+            0.0, 0.03, // bar 2: sym0=0%, sym1=+3%
         ];
         let weights = vec![0.5, 0.5];
         let pr = compute_portfolio_returns(&matrix, 2, &weights);
