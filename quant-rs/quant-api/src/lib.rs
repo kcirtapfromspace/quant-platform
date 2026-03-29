@@ -21,10 +21,7 @@ use axum::{
     Router,
 };
 use tokio::sync::broadcast;
-use tower_http::{
-    compression::CompressionLayer,
-    cors::CorsLayer,
-};
+use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 use tracing::info;
 
 use ws::WsEvent;
@@ -54,7 +51,13 @@ impl AppState {
         backtest_results_dir: impl Into<String>,
     ) -> Arc<Self> {
         let api_key = std::env::var("QUANT_API_KEY").ok();
-        Self::new_with_key(db_path, oms_db_path, metrics_file, backtest_results_dir, api_key)
+        Self::new_with_key(
+            db_path,
+            oms_db_path,
+            metrics_file,
+            backtest_results_dir,
+            api_key,
+        )
     }
 
     /// Create state with an explicit API key (used in tests to avoid env var pollution).
@@ -95,7 +98,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/orders", get(routes::orders::get_orders))
         .route("/risk", get(routes::risk::get_risk))
         .route("/signals", get(routes::signals::get_signals))
-        .route("/backtest/latest", get(routes::backtest::get_backtest_latest))
+        .route(
+            "/backtest/latest",
+            get(routes::backtest::get_backtest_latest),
+        )
         .route("/market/quotes", get(routes::market::get_quotes))
         .layer(auth_layer.clone());
 
@@ -111,10 +117,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/api/v1", api_routes)
         // WebSocket: protected by the same auth middleware.
         // Clients must supply ?api_key=<key> in the upgrade URL.
-        .route(
-            "/ws",
-            get(ws::ws_handler).layer(auth_layer),
-        )
+        .route("/ws", get(ws::ws_handler).layer(auth_layer))
         .layer(
             CorsLayer::new()
                 .allow_origin(allowed_origin)

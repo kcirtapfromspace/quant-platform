@@ -46,7 +46,12 @@ pub async fn get_signals(State(state): State<Arc<AppState>>) -> ApiResult<Json<V
                 views.push(view);
             }
         }
-        views.sort_by(|a, b| b.combined_target.abs().partial_cmp(&a.combined_target.abs()).unwrap());
+        views.sort_by(|a, b| {
+            b.combined_target
+                .abs()
+                .partial_cmp(&a.combined_target.abs())
+                .unwrap()
+        });
         Ok::<_, anyhow::Error>(views)
     })
     .await??;
@@ -68,13 +73,19 @@ fn compute_signals_for(symbol: &str, closes: &[f64]) -> SignalView {
     let bb_lower = qf::bb_lower(closes, BB_PERIOD, BB_STD);
 
     let (mom_score, mom_conf, _) = momentum_signal(&rsi_vals, &returns, 5, 0.05);
-    let (mr_score, mr_conf, _) = mean_reversion_signal(&bb_mid, &bb_upper, &bb_lower, &returns, BB_STD);
+    let (mr_score, mr_conf, _) =
+        mean_reversion_signal(&bb_mid, &bb_upper, &bb_lower, &returns, BB_STD);
     let (trend_score, trend_conf, _) = trend_following_signal(&macd_hist, &fast_ma, &slow_ma);
 
     let combined_target = (mom_score * mom_conf + mr_score * mr_conf + trend_score * trend_conf)
         / (mom_conf + mr_conf + trend_conf).max(1e-9);
 
-    let last_rsi = rsi_vals.iter().rev().find(|v| v.is_finite()).copied().unwrap_or(50.0);
+    let last_rsi = rsi_vals
+        .iter()
+        .rev()
+        .find(|v| v.is_finite())
+        .copied()
+        .unwrap_or(50.0);
 
     SignalView {
         symbol: symbol.to_string(),

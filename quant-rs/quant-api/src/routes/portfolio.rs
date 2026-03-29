@@ -23,7 +23,9 @@ pub struct PortfolioResponse {
     pub n_positions: usize,
 }
 
-pub async fn get_portfolio(State(state): State<Arc<AppState>>) -> ApiResult<Json<PortfolioResponse>> {
+pub async fn get_portfolio(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<PortfolioResponse>> {
     let oms_path = match &state.oms_db_path {
         Some(p) => p.clone(),
         None => {
@@ -67,7 +69,12 @@ pub async fn get_portfolio(State(state): State<Arc<AppState>>) -> ApiResult<Json
         })
         .collect();
 
-    views.sort_by(|a, b| b.market_value.abs().partial_cmp(&a.market_value.abs()).unwrap());
+    views.sort_by(|a, b| {
+        b.market_value
+            .abs()
+            .partial_cmp(&a.market_value.abs())
+            .unwrap()
+    });
 
     let n_positions = views.len();
     Ok(Json(PortfolioResponse {

@@ -3,9 +3,11 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'node:fs';
 import path from 'path';
 import { fetchQuote, fetchHistory, fetchBatchQuotes, QuoteData, OhlcvBar } from './marketData.js';
 import { PaperTradingEngine } from './paperTrading.js';
+import * as alpaca from './alpaca.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -192,8 +194,43 @@ app.get('/api/history/:symbol', async (req, res) => {
   res.json(bars);
 });
 
-app.get('/api/portfolio', (_req, res) => {
-  res.json(engine.getPortfolio(latestQuotes));
+app.get('/api/portfolio', async (_req, res) => {
+  if (!alpaca.hasCredentials()) {
+    return res.json(engine.getPortfolio(latestQuotes));
+  }
+
+  const [account, positions] = await Promise.all([alpaca.getAccount(), alpaca.getPositions()]);
+
+  if (!account) {
+    // Alpaca call failed — fall back to in-memory engine
+    return res.json(engine.getPortfolio(latestQuotes));
+  }
+
+  const totalValue = parseFloat(account.portfolio_value);
+  const cash = parseFloat(account.cash);
+  const equity = parseFloat(account.equity);
+  const lastEquity = parseFloat(account.last_equity);
+  const dailyPnl = equity - lastEquity;
+  const dailyPnlPercent = lastEquity > 0 ? (dailyPnl / lastEquity) * 100 : 0;
+
+  const positionViews = positions.map((p) => {
+    const marketValue = parseFloat(p.market_value);
+    const quantity = parseFloat(p.qty);
+    const avgCost = parseFloat(p.avg_entry_price);
+    const currentPrice = parseFloat(p.current_price);
+    const unrealizedPnl = parseFloat(p.unrealized_pl);
+    const unrealizedPnlPercent = parseFloat(p.unrealized_plpc) * 100;
+    return { symbol: p.symbol, quantity, avgCost, currentPrice, marketValue, unrealizedPnl, unrealizedPnlPercent };
+  });
+
+  res.json({
+    cash,
+    equity: equity - cash,
+    totalValue,
+    dailyPnl,
+    dailyPnlPercent,
+    positions: positionViews,
+  });
 });
 
 app.get('/api/orders', (_req, res) => {
@@ -388,28 +425,82 @@ function simulateStrategyUpdates() {
   }
 }
 
+// ── run_e_state.json reader ────────────────────────────────────────────────────
+// Written by `quant run` to RUN_E_STATE_PATH (default /app/data/run_e_state.json).
+// Expected format: { "strategies": StrategyState[] } or StrategyState[].
+// Falls back to the static strategyStore if the file is absent or unparseable.
+
+const RUN_E_STATE_PATH = process.env.RUN_E_STATE_PATH ?? './run_e_state.json';
+
+function loadRunEState(): StrategyState[] {
+  try {
+    const text = readFileSync(RUN_E_STATE_PATH, 'utf8');
+    const parsed = JSON.parse(text) as unknown;
+    const list: unknown = Array.isArray(parsed) ? parsed : (parsed as Record<string, unknown>).strategies ?? [];
+    if (!Array.isArray(list) || list.length === 0) return [];
+    return list as StrategyState[];
+  } catch {
+    return [];
+  }
+}
+
 app.get('/api/strategies', (_req, res) => {
+  const fromFile = loadRunEState();
+  if (fromFile.length > 0) {
+    return res.json(fromFile);
+  }
   res.json(Array.from(strategyStore.values()));
 });
 
-// ── Risk Dashboard stub endpoint ───────────────────────────────────────────────
+// ── Risk snapshot ──────────────────────────────────────────────────────────────
+// positionLimitUtilization is computed from live positions when Alpaca creds
+// are present.  Each utilization value = |market_value| / (portfolio_value × 5%)
+// which maps directly to QUA-92's max_weight=0.05 constraint.
+// VaR and drawdown require return history and are not computable from the
+// current snapshot alone; they remain as placeholders.
 
-app.get('/api/risk/snapshot', (_req, res) => {
+const MAX_WEIGHT = 0.05; // QUA-92 max position weight
+
+app.get('/api/risk/snapshot', async (_req, res) => {
+  if (!alpaca.hasCredentials()) {
+    return res.json({
+      var95: 0.0187,
+      var99: 0.0312,
+      drawdown: 0.0423,
+      maxDrawdown: 0.1128,
+      circuitBreakerArmed: false,
+      positionLimitUtilization: [
+        { symbol: 'AAPL', utilization: 0.72 },
+        { symbol: 'NVDA', utilization: 0.88 },
+        { symbol: 'MSFT', utilization: 0.51 },
+        { symbol: 'GOOGL', utilization: 0.64 },
+        { symbol: 'TSLA', utilization: 0.93 },
+        { symbol: 'JPM', utilization: 0.38 },
+        { symbol: 'META', utilization: 0.47 },
+      ],
+    });
+  }
+
+  const [account, positions] = await Promise.all([alpaca.getAccount(), alpaca.getPositions()]);
+
+  const portfolioValue = account ? parseFloat(account.portfolio_value) : 0;
+  const maxPositionValue = portfolioValue * MAX_WEIGHT;
+
+  const positionLimitUtilization = positions
+    .map((p) => ({
+      symbol: p.symbol,
+      utilization: maxPositionValue > 0 ? Math.abs(parseFloat(p.market_value)) / maxPositionValue : 0,
+    }))
+    .sort((a, b) => b.utilization - a.utilization)
+    .slice(0, 10);
+
   res.json({
-    var95: 0.0187,
-    var99: 0.0312,
-    drawdown: 0.0423,
-    maxDrawdown: 0.1128,
+    var95: 0.0,
+    var99: 0.0,
+    drawdown: 0.0,
+    maxDrawdown: 0.0,
     circuitBreakerArmed: false,
-    positionLimitUtilization: [
-      { symbol: 'AAPL', utilization: 0.72 },
-      { symbol: 'NVDA', utilization: 0.88 },
-      { symbol: 'MSFT', utilization: 0.51 },
-      { symbol: 'GOOGL', utilization: 0.64 },
-      { symbol: 'TSLA', utilization: 0.93 },
-      { symbol: 'JPM', utilization: 0.38 },
-      { symbol: 'META', utilization: 0.47 },
-    ],
+    positionLimitUtilization,
   });
 });
 

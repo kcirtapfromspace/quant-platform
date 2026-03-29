@@ -59,6 +59,14 @@ The procedure depends on `daily_nav` and `daily_recon_log` tables existing in
 If not provisioned, COO must run reconciliation manually and document in `plans/`
 as `operations-log-2026-03.md` until tables are ready.
 
+**CTO resolution (2026-03-28):** Migration script delivered at `migrations/001_paper_trading_schema.sql`.
+Operator provisions tables on the live k8s volume with:
+```
+duckdb data/paper_trading.duckdb < migrations/001_paper_trading_schema.sql
+```
+All three tables (`daily_nav`, `daily_recon_log`, `daily_sleeve_pnl`) created as `IF NOT EXISTS`
+(idempotent). Script verified against DuckDB in-memory. **Flag 3 RESOLVED.**
+
 ---
 
 ## QUA-79: Circuit Breaker Response Playbook
@@ -103,7 +111,7 @@ assessment in the daily ops log regardless.
 
 | Document | Decision | Open items (must clear before Monday) |
 |----------|----------|--------------------------------------|
-| QUA-77 NAV Reconciliation | **APPROVED** | CTO: provision DuckDB tables |
+| QUA-77 NAV Reconciliation | **APPROVED** | CTO: provision DuckDB tables — **DONE** (migrations/001) |
 | QUA-79 Circuit Breaker Playbook | **APPROVED** | COO: add daily P&L reset clarification |
 
 **Both procedures are operationally cleared for paper trading launch on 2026-03-30.**

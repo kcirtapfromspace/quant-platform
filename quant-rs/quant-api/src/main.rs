@@ -9,7 +9,11 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "quant-api", version, about = "Quant REST + WebSocket API server")]
+#[command(
+    name = "quant-api",
+    version,
+    about = "Quant REST + WebSocket API server"
+)]
 struct Cli {
     /// Path to the DuckDB market data file.
     #[arg(long)]

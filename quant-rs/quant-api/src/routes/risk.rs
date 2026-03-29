@@ -44,7 +44,10 @@ pub async fn get_risk(State(state): State<Arc<AppState>>) -> ApiResult<Json<Risk
     let portfolio_value = gross_exposure;
 
     let (gross_pct, net_pct) = if portfolio_value > 0.0 {
-        (gross_exposure / portfolio_value, net_exposure / portfolio_value)
+        (
+            gross_exposure / portfolio_value,
+            net_exposure / portfolio_value,
+        )
     } else {
         (0.0, 0.0)
     };

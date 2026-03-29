@@ -7,21 +7,14 @@ use crate::{
     AppState,
 };
 
-pub async fn get_backtest_latest(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<Json<Value>> {
+pub async fn get_backtest_latest(State(state): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
     let results_dir = state.backtest_results_dir.clone();
 
-    let result = tokio::task::spawn_blocking(move || {
-        find_latest_results(&results_dir)
-    })
-    .await?;
+    let result = tokio::task::spawn_blocking(move || find_latest_results(&results_dir)).await?;
 
     match result {
         Some(v) => Ok(Json(v)),
-        None => Err(ApiError::NotFound(
-            "no backtest results found".to_string(),
-        )),
+        None => Err(ApiError::NotFound("no backtest results found".to_string())),
     }
 }
 
