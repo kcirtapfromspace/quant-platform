@@ -18,6 +18,9 @@ pub enum OmsError {
 
     #[error("invalid order: {0}")]
     InvalidOrder(String),
+
+    #[error("data parse error: {0}")]
+    Parse(String),
 }
 
 pub type OmsResult<T> = Result<T, OmsError>;

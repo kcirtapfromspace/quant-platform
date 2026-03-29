@@ -117,11 +117,21 @@ impl<S: DataSource> IngestionPipeline<S> {
         lookback_days: i64,
     ) -> Result<Vec<(String, Vec<NaiveDate>)>, DataError> {
         let start = end_date - chrono::Duration::days(lookback_days);
-        let expected = business_days(start, end_date);
         let mut gaps = Vec::new();
 
         for sym in symbols {
-            let missing = self.store.coverage_gaps(sym, start, end_date, &expected)?;
+            // Cap the expected upper boundary at the latest date actually stored
+            // for this symbol.  When the upstream source has not yet published
+            // today's bar (source-data lag), this prevents those unpublished
+            // calendar days from being reported as gaps.  True internal gaps
+            // within the published range are still surfaced.
+            let sym_end = self
+                .store
+                .latest_date(sym)?
+                .map(|d| d.min(end_date))
+                .unwrap_or(end_date);
+            let expected = business_days(start, sym_end);
+            let missing = self.store.coverage_gaps(sym, start, sym_end, &expected)?;
             if !missing.is_empty() {
                 gaps.push((sym.clone(), missing));
             }
@@ -266,5 +276,44 @@ mod tests {
             .unwrap();
         assert_eq!(result.symbols_processed, 1);
         assert_eq!(result.records_stored, 1);
+    }
+
+    // Regression: incremental ingest must not report source-data lag as a gap.
+    // When the upstream source has only published data through a date that is
+    // before `end_date` (e.g. today), gap detection must cap the expected range
+    // at the latest stored date rather than flagging the unpublished days.
+    #[test]
+    fn incremental_no_false_positive_gap_on_source_lag() {
+        // Source returns data only through nd(2024, 1, 5) (Friday).
+        // The pipeline is invoked with end_date = nd(2024, 1, 9) (Tuesday),
+        // simulating that today is two business days past the last available bar.
+        let store = MarketDataStore::open(":memory:").unwrap();
+        let source_records = vec![
+            rec("AAPL", nd(2024, 1, 2)),
+            rec("AAPL", nd(2024, 1, 3)),
+            rec("AAPL", nd(2024, 1, 4)),
+            rec("AAPL", nd(2024, 1, 5)),
+        ];
+        let source = MockSource(source_records);
+        let pipeline = IngestionPipeline::new(store, source);
+
+        let symbols = vec!["AAPL".to_string()];
+        // end_date is ahead of source; no explicit start forces full-mode lookback window
+        let result = pipeline
+            .run(
+                &symbols,
+                IngestMode::Full,
+                Some(nd(2024, 1, 2)),
+                Some(nd(2024, 1, 9)),
+            )
+            .unwrap();
+
+        // Jan 8 (Mon) and Jan 9 (Tue) are business days not in the source yet.
+        // They must NOT appear as gaps.
+        assert!(
+            result.gaps_detected.is_empty(),
+            "expected no gaps on source lag, got: {:?}",
+            result.gaps_detected
+        );
     }
 }

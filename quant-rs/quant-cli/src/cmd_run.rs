@@ -308,6 +308,12 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
             ) {
                 Ok((submitted, rejected)) => {
                     info!("Cycle complete: submitted={submitted}  rejected={rejected}");
+                    // Persist cycle metadata regardless of whether any orders
+                    // were submitted — ensures `quant run status` shows a
+                    // meaningful last-rebalance timestamp and cash balance.
+                    if let Err(e) = oms.record_cycle(today, args.cash) {
+                        warn!("Failed to persist cycle metadata: {e}");
+                    }
                     last_run_date = Some(today);
                 }
                 Err(e) => warn!("Rebalance cycle failed: {e}"),
@@ -364,7 +370,7 @@ pub fn run_status(args: RunStatusArgs) -> anyhow::Result<()> {
 
     println!("=== OMS Status: {} ===", args.oms_db);
 
-    let last_date = oms.last_order_date();
+    let last_date = oms.last_rebalance_date();
     println!(
         "Last rebalance: {}",
         last_date

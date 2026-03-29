@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS positions (
     avg_cost     REAL NOT NULL DEFAULT 0.0,
     market_price REAL NOT NULL DEFAULT 0.0
 );
+
+-- Key/value store for cycle-level metadata (last_rebalance_at, cash, etc.)
+-- Ensures run_status is meaningful even after a zero-trade rebalance cycle.
+CREATE TABLE IF NOT EXISTS metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 ";
 
 fn dt_to_str(dt: DateTime<Utc>) -> String {
@@ -279,6 +286,40 @@ impl SqliteStateStore {
             )
             .optional()?;
         Ok(result)
+    }
+
+    // ── Metadata persistence ──────────────────────────────────────────────
+
+    pub fn save_metadata(&self, key: &str, value: &str) -> OmsResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_metadata(&self, key: &str) -> OmsResult<Option<String>> {
+        let result = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Date of the last completed rebalance cycle, or `None`.
+    /// Reads from the `metadata` table (set on every cycle, even zero-trade).
+    /// Falls back to `last_order_date()` for stores predating this migration.
+    pub fn last_rebalance_date(&self) -> OmsResult<Option<NaiveDate>> {
+        if let Some(s) = self.load_metadata("last_rebalance_at")? {
+            let d = NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                .map_err(|e| crate::error::OmsError::Parse(e.to_string()))?;
+            return Ok(Some(d));
+        }
+        self.last_order_date()
     }
 
     /// Returns the date (in local time) of the most recently created order,

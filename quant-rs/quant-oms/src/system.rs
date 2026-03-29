@@ -69,6 +69,13 @@ impl OrderManagementSystem {
         self.broker_id_map = store.load_broker_id_map()?;
         self.positions = store.load_positions()?;
 
+        // Restore cash from metadata if it was persisted by a prior cycle.
+        if let Some(cash_str) = store.load_metadata("cash")? {
+            if let Ok(v) = cash_str.parse::<f64>() {
+                self.cash = v;
+            }
+        }
+
         for order in orders {
             self.orders.insert(order.id.clone(), order);
         }
@@ -276,6 +283,28 @@ impl OrderManagementSystem {
     pub fn last_order_date(&self) -> Option<chrono::NaiveDate> {
         self.store.as_ref()?.last_order_date().ok().flatten()
     }
+
+    /// Date of the last completed rebalance cycle (even if zero orders were
+    /// submitted).  Falls back to `last_order_date()` for legacy stores.
+    pub fn last_rebalance_date(&self) -> Option<chrono::NaiveDate> {
+        self.store.as_ref()?.last_rebalance_date().ok().flatten()
+    }
+
+    /// Persist a completed rebalance cycle: stores the date and cash balance
+    /// in the metadata table so `quant run status` remains accurate even when
+    /// no orders were generated.
+    pub fn record_cycle(
+        &self,
+        date: chrono::NaiveDate,
+        cash: f64,
+    ) -> OmsResult<()> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        store.save_metadata("last_rebalance_at", &date.format("%Y-%m-%d").to_string())?;
+        store.save_metadata("cash", &cash.to_string())?;
+        Ok(())
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -425,5 +454,31 @@ mod tests {
         drop(store);
         drop(store2);
         // Recovery logic is exercised by save/load_* unit tests in store.rs.
+    }
+
+    // Regression: record_cycle must persist last_rebalance_date and cash even
+    // when zero orders were submitted during the cycle.
+    #[test]
+    fn test_record_cycle_persists_metadata() {
+        use tempfile::NamedTempFile;
+        let tmp = NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_path_buf();
+
+        let store = SqliteStateStore::new(&db_path).unwrap();
+        let oms = OrderManagementSystem::new(Some(store));
+
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 3, 15).unwrap();
+        oms.record_cycle(date, 100_000.0).unwrap();
+
+        // last_rebalance_date should now return the recorded date.
+        assert_eq!(oms.last_rebalance_date(), Some(date));
+
+        // Restore into a new OMS from the same file — cash should be recovered.
+        let store2 = SqliteStateStore::new(&db_path).unwrap();
+        let mut oms2 = OrderManagementSystem::new(Some(store2));
+        oms2.restore_state().unwrap();
+
+        assert_eq!(oms2.last_rebalance_date(), Some(date));
+        assert!((oms2.cash() - 100_000.0).abs() < 1e-9);
     }
 }
