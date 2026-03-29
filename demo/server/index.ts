@@ -2,8 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import { fileURLToPath } from 'url';
+import path from 'path';
 import { fetchQuote, fetchHistory, fetchBatchQuotes, QuoteData, OhlcvBar } from './marketData.js';
 import { PaperTradingEngine } from './paperTrading.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Backtest engine (mirrors quant-backtest Rust logic) ───────────────────────
 
@@ -123,7 +127,7 @@ function computeBacktest(
 }
 
 const app = express();
-const PORT = 3001;
+const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
 app.use(cors());
 app.use(express.json());
@@ -409,6 +413,24 @@ app.get('/api/risk/snapshot', (_req, res) => {
   });
 });
 
+// ── Health check ───────────────────────────────────────────────────────────────
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime(), timestamp: Date.now() });
+});
+
+// ── Production static file serving ────────────────────────────────────────────
+// In dev, Vite serves the React SPA and proxies /api to this server.
+// In production (inside Docker), Express serves the built assets from dist/.
+
+if (process.env.NODE_ENV === 'production') {
+  const distPath = path.resolve(__dirname, '..', 'dist');
+  app.use(express.static(distPath));
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
+
 // --- Server + WebSocket ---
 
 const server = createServer(app);
@@ -430,7 +452,8 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[QUA Demo] API server running on http://localhost:${PORT}`);
+  const env = process.env.NODE_ENV ?? 'development';
+  console.log(`[QUA Demo] API server running on http://localhost:${PORT} (${env})`);
   console.log(`[QUA Demo] WebSocket on ws://localhost:${PORT}/ws`);
   console.log(`[QUA Demo] Watchlist: ${WATCHLIST.join(', ')}`);
 
