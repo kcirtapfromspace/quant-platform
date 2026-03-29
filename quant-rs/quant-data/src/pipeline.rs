@@ -61,17 +61,24 @@ impl<S: DataSource> IngestionPipeline<S> {
         let end_date = end.unwrap_or(today);
         let symbols_upper: Vec<String> = symbols.iter().map(|s| s.to_uppercase()).collect();
 
-        let records = if mode == IngestMode::Incremental {
+        let (records, check_start) = if mode == IngestMode::Incremental {
             self.run_incremental(&symbols_upper, end_date)?
         } else {
             let start_date = start.unwrap_or_else(|| NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
-            self.source.fetch(&symbols_upper, start_date, end_date)?
+            (
+                self.source.fetch(&symbols_upper, start_date, end_date)?,
+                start_date,
+            )
         };
 
         let fetched = records.len();
         let stored = self.store.upsert(&records)?;
 
-        let gaps = self.detect_gaps(&symbols_upper, end_date, 30)?;
+        // Limit gap-detection window to what was actually fetched (capped at 30 days).
+        // Without this cap, incremental ingest on a fresh DB would only populate
+        // ~5 days but detect_gaps would scan the last 30 days, producing ~20 false gaps.
+        let lookback_days = (end_date - check_start).num_days().max(1).min(30);
+        let gaps = self.detect_gaps(&symbols_upper, end_date, lookback_days)?;
 
         Ok(PipelineResult {
             symbols_processed: symbols_upper.len(),
@@ -85,7 +92,7 @@ impl<S: DataSource> IngestionPipeline<S> {
         &self,
         symbols: &[String],
         end_date: NaiveDate,
-    ) -> Result<Vec<OhlcvRecord>, DataError> {
+    ) -> Result<(Vec<OhlcvRecord>, NaiveDate), DataError> {
         let fallback = end_date - chrono::Duration::days(LOOKBACK_DAYS_INCREMENTAL);
         let mut min_start = end_date;
         let mut symbol_starts: std::collections::HashMap<&str, NaiveDate> =
@@ -107,7 +114,7 @@ impl<S: DataSource> IngestionPipeline<S> {
             .into_iter()
             .filter(|r| r.date >= *symbol_starts.get(r.symbol.as_str()).unwrap_or(&fallback))
             .collect();
-        Ok(filtered)
+        Ok((filtered, min_start))
     }
 
     fn detect_gaps(

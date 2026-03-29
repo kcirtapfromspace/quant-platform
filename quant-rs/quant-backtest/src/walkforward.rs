@@ -309,10 +309,7 @@ mod tests {
     }
 
     fn prices_to_returns(prices: &[f64]) -> Vec<f64> {
-        prices
-            .windows(2)
-            .map(|w| (w[1] - w[0]) / w[0])
-            .collect()
+        prices.windows(2).map(|w| (w[1] - w[0]) / w[0]).collect()
     }
 
     #[test]

@@ -135,8 +135,7 @@ pub fn run_wf(args: WfArgs) -> anyhow::Result<()> {
     );
 
     // ── 1. Load and align price data ──────────────────────────────────────────
-    let (symbols, adj_close_matrix, common_dates) =
-        load_and_align(&store, &universe, start, end)?;
+    let (symbols, adj_close_matrix, common_dates) = load_and_align(&store, &universe, start, end)?;
 
     let n_assets = symbols.len();
     if n_assets == 0 {
@@ -225,7 +224,9 @@ impl SignalFlags {
         Self {
             momentum: parts.contains(&"momentum"),
             mean_reversion: parts.contains(&"mean_reversion"),
-            trend_following: parts.iter().any(|&x| x == "trend" || x == "trend_following"),
+            trend_following: parts
+                .iter()
+                .any(|&x| x == "trend" || x == "trend_following"),
         }
     }
 }
@@ -259,15 +260,7 @@ fn build_signals(
         // Emit one signal per bar.
         for t in 0..n_bars {
             let signal = compute_bar_signal(
-                t,
-                &rets,
-                &rsi_vals,
-                &bb_mid,
-                &bb_upper,
-                &bb_lower,
-                &macd_hist,
-                &fast_ma,
-                &slow_ma,
+                t, &rets, &rsi_vals, &bb_mid, &bb_upper, &bb_lower, &macd_hist, &fast_ma, &slow_ma,
                 flags,
             );
             signals[t * n_assets + j] = signal;
@@ -303,7 +296,8 @@ fn compute_bar_signal(
     let mut alpha_sum = 0.0_f64;
 
     if flags.momentum {
-        let (score, conf, _) = momentum_signal(&rsi_vals[..end], &rets[..end.min(rets.len())], 20, 0.02);
+        let (score, conf, _) =
+            momentum_signal(&rsi_vals[..end], &rets[..end.min(rets.len())], 20, 0.02);
         let alpha = (score * conf).clamp(-1.0, 1.0);
         alpha_sum += alpha;
         n_active += 1;
@@ -417,11 +411,7 @@ fn build_returns(adj_close: &[f64], n_assets: usize, n_bars: usize) -> Vec<f64> 
         for j in 0..n_assets {
             let prev = adj_close[(t - 1) * n_assets + j];
             let cur = adj_close[t * n_assets + j];
-            rets[t * n_assets + j] = if prev > 0.0 {
-                (cur - prev) / prev
-            } else {
-                0.0
-            };
+            rets[t * n_assets + j] = if prev > 0.0 { (cur - prev) / prev } else { 0.0 };
         }
     }
     rets
@@ -454,11 +444,11 @@ fn resolve_symbols(arg: Option<&str>) -> Vec<String> {
     }
     // Default 50-symbol S&P 500 universe (mirrors QUA-85 gate).
     vec![
-        "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "LLY",
-        "JPM", "V", "AVGO", "XOM", "PG", "MA", "HD", "COST", "JNJ", "MRK",
-        "ABBV", "CVX", "CRM", "BAC", "NFLX", "PEP", "ADBE", "WMT", "TMO", "AMD",
-        "ACN", "CSCO", "ABT", "DIS", "MCD", "WFC", "CAT", "DHR", "INTC", "VZ",
-        "INTU", "CMCSA", "NKE", "AMGN", "IBM", "TXN", "GE", "HON", "RTX", "AXP",
+        "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "LLY", "JPM", "V",
+        "AVGO", "XOM", "PG", "MA", "HD", "COST", "JNJ", "MRK", "ABBV", "CVX", "CRM", "BAC", "NFLX",
+        "PEP", "ADBE", "WMT", "TMO", "AMD", "ACN", "CSCO", "ABT", "DIS", "MCD", "WFC", "CAT",
+        "DHR", "INTC", "VZ", "INTU", "CMCSA", "NKE", "AMGN", "IBM", "TXN", "GE", "HON", "RTX",
+        "AXP",
     ]
     .into_iter()
     .map(String::from)
@@ -559,15 +549,16 @@ fn print_gate_check(result: &quant_backtest::WalkForwardResult) {
         result.wfe
     );
     println!();
-    println!(
-        "  OVERALL: {}",
-        if all_pass { "PASS ✓" } else { "FAIL ✗" }
-    );
+    println!("  OVERALL: {}", if all_pass { "PASS ✓" } else { "FAIL ✗" });
     println!("═══════════════════════════════════════════════════════");
 }
 
 fn pass_fail(ok: bool) -> &'static str {
-    if ok { "PASS" } else { "FAIL" }
+    if ok {
+        "PASS"
+    } else {
+        "FAIL"
+    }
 }
 
 fn write_json(

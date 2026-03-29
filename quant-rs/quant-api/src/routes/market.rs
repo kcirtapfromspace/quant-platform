@@ -50,12 +50,7 @@ pub async fn get_history(
         let views: Vec<OhlcvBarView> = records
             .into_iter()
             .map(|r| OhlcvBarView {
-                time: r
-                    .date
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_utc()
-                    .timestamp(),
+                time: r.date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(),
                 open: r.open,
                 high: r.high,
                 low: r.low,

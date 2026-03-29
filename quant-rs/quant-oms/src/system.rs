@@ -293,11 +293,7 @@ impl OrderManagementSystem {
     /// Persist a completed rebalance cycle: stores the date and cash balance
     /// in the metadata table so `quant run status` remains accurate even when
     /// no orders were generated.
-    pub fn record_cycle(
-        &self,
-        date: chrono::NaiveDate,
-        cash: f64,
-    ) -> OmsResult<()> {
+    pub fn record_cycle(&self, date: chrono::NaiveDate, cash: f64) -> OmsResult<()> {
         let Some(store) = &self.store else {
             return Ok(());
         };
