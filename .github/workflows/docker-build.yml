@@ -30,11 +30,11 @@ env:
 jobs:
   # ---------------------------------------------------------------------------
   # Build quant-rs ARM64 image and push to ghcr.io
-  # Uses QEMU for cross-compilation on GitHub-hosted runners.
+  # Native ARM64 build on self-hosted Turing Pi runner — no QEMU needed.
   # ---------------------------------------------------------------------------
   build:
     name: Build ARM64 image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64]
 
     permissions:
       contents: read
@@ -43,11 +43,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU (ARM64 emulation)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -80,7 +75,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # BuildKit inline cache — speeds up repeated builds via registry cache
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache,mode=max
 
@@ -90,7 +84,6 @@ jobs:
           context: ./quant-rs
           file: ./quant-rs/Dockerfile.gpu
           platforms: linux/arm64
-          # GPU image is never auto-pushed — requires explicit manual push
           push: false
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-r36.4.0
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-cache
@@ -102,7 +95,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-run-e:
     name: Build quant-run-e ARM64 image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64]
 
     permissions:
       contents: read
@@ -111,11 +104,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU (ARM64 emulation)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -157,7 +145,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-api:
     name: Build quant-api ARM64 image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64]
 
     permissions:
       contents: read
@@ -166,11 +154,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU (ARM64 emulation)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -203,8 +186,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-api.outputs.tags }}
           labels: ${{ steps.meta-api.outputs.labels }}
-          # Cross-seed from quant-rs:cache so the cargo-chef cook layer (DuckDB C++ deps)
-          # is a cache hit on the first build — avoids 5+ hour cold compile under QEMU.
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-api:cache
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
@@ -216,7 +197,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-frontend:
     name: Build quant-frontend ARM64 image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64]
 
     permissions:
       contents: read
@@ -225,11 +206,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU (ARM64 emulation)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -271,7 +247,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-dashboard:
     name: Build quant-dashboard ARM64 image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64]
 
     permissions:
       contents: read
@@ -280,11 +256,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU (ARM64 emulation)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -321,20 +292,15 @@ jobs:
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-dashboard:cache,mode=max
 
   # ---------------------------------------------------------------------------
-  # Push to the local Turing Pi cluster registry.
-  # Runs only on self-hosted ARM64 runners with access to mirror.registry:5000.
-  # Triggered on main-branch pushes when that runner is available.
+  # Also push to the local Turing Pi cluster registry (same runner, no extra hop).
   # ---------------------------------------------------------------------------
   push-local:
     name: Push to local registry
     needs: build
-    # Self-hosted ARM64 runner label — adjust to match your runner configuration
     runs-on: [self-hosted, linux, arm64]
     if: >
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main'
-    # Skip rather than fail if no self-hosted runner is available
-    continue-on-error: true
 
     steps:
       - name: Checkout
@@ -343,7 +309,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push to local registry (native ARM64, no QEMU needed)
+      - name: Build and push to local registry (native ARM64)
         uses: docker/build-push-action@v5
         with:
           context: ./quant-rs
@@ -353,5 +319,4 @@ jobs:
           tags: |
             mirror.registry:5000/quant-rs:latest
             mirror.registry:5000/quant-rs:sha-${{ github.sha }}
-          # Pull cache from ghcr.io so local builds stay fast
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
