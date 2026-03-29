@@ -54,8 +54,6 @@ spec:
             - "8080"
             - --db
             - /data/quant.duckdb
-            - --oms-db
-            - /data/quant_oms.db
           env:
             - name: QUANT_API_KEY
               valueFrom:
