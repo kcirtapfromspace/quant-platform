@@ -1,5 +1,7 @@
 //! `quant benchmark qua68` — OOS benchmark: Bayesian vs EMA AdaptiveSignalCombiner.
 //!
+//! `quant benchmark qua92` — QUA-92 vol regime sleeve: PF gap closure attempt.
+//!
 //! Implements the QUA-68 comparative walk-forward backtest.
 //!
 //! **Config** (mirrors QUA-58): 90d train / 30d OOS / 64 folds / 50 synthetic symbols.
@@ -22,6 +24,9 @@
 //! |-----------|-------------------------------------|----------------------------|
 //! | Baseline  | EMA-IC (λ = 0.94)                   | vol-threshold binary       |
 //! | Bayesian  | `NormalGammaTracker` conjugate IC   | `HmmRegimeModel` soft prob |
+
+use std::fs;
+use std::path::Path;
 
 use clap::Args;
 
@@ -574,6 +579,549 @@ pub fn run_benchmark_qua68(args: BenchmarkQua68Args) -> anyhow::Result<()> {
         );
         println!("  → Recommend Phase 2: hierarchical MCMC (cross-signal covariance).");
     }
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// QUA-92: Vol Regime Sleeve — PF Gap Closure Attempt
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Three runs on the same 50 synthetic symbols / 64-fold WF grid as QUA-68:
+//
+//   Run A — signal_expansion_ensemble (QUA-85 4-sleeve control)
+//             momentum 35% / trend 30% / mean_reversion 15% / adaptive 20%
+//
+//   Run B — vol_regime_ensemble (5-sleeve treatment)
+//             momentum 30% / trend 25% / mean_reversion 20% /
+//             vol_regime 15% / adaptive 10%
+//
+//   Run C — vol_regime_standalone (alpha isolation, CRO gate: Sharpe ≥ 0.50)
+//
+// Vol regime sleeve = VolatilitySignal(period=20, low_vol=0.12, high_vol=0.40)
+//                   + ReturnQualitySignal(period=60, sharpe_cap=3.0)
+//                   combined EQUAL_WEIGHT, long-only.
+
+/// QUA-92 benchmark CLI arguments.
+#[derive(Args)]
+pub struct BenchmarkQua92Args {
+    /// Number of synthetic symbols to simulate.
+    #[arg(long, default_value = "50")]
+    pub n_symbols: usize,
+
+    /// Number of walk-forward folds.
+    #[arg(long, default_value = "64")]
+    pub n_folds: usize,
+
+    /// Rolling IS window in trading-day bars.
+    #[arg(long, default_value = "90")]
+    pub train_window: usize,
+
+    /// OOS step in trading-day bars.
+    #[arg(long, default_value = "30")]
+    pub oos_window: usize,
+
+    /// One-way commission fraction (e.g. 0.001 = 10 bps).
+    #[arg(long, default_value = "0.001")]
+    pub commission: f64,
+
+    /// Directory to write results JSON and validation table.
+    #[arg(long, default_value = "backtest-results/vol-regime")]
+    pub output_dir: String,
+}
+
+// ── Signal kernels ─────────────────────────────────────────────────────────────
+
+/// VolatilitySignal kernel.
+///
+/// Annualises the `period`-bar sample std (ddof=1) of `rets` by × √252.
+/// Returns +1.0 when `ann_vol < low_vol`, −1.0 when `ann_vol > high_vol`,
+/// and interpolates linearly between.  Returns 0.0 when insufficient data.
+fn volatility_score(rets: &[f64], period: usize, low_vol: f64, high_vol: f64) -> f64 {
+    if rets.len() < period || period < 2 {
+        return 0.0;
+    }
+    let w = &rets[rets.len() - period..];
+    let mean = w.iter().sum::<f64>() / period as f64;
+    let var = w.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (period - 1) as f64;
+    let ann_vol = var.sqrt() * 252_f64.sqrt();
+    if ann_vol < low_vol {
+        1.0
+    } else if ann_vol > high_vol {
+        -1.0
+    } else {
+        1.0 - 2.0 * (ann_vol - low_vol) / (high_vol - low_vol)
+    }
+}
+
+/// ReturnQualitySignal kernel.
+///
+/// Computes the annualised Sharpe (ddof=1) of `rets` over `period` bars,
+/// then normalises to [−1, 1] by dividing by `sharpe_cap`.
+fn return_quality_score(rets: &[f64], period: usize, sharpe_cap: f64) -> f64 {
+    if rets.len() < period || period < 2 {
+        return 0.0;
+    }
+    let w = &rets[rets.len() - period..];
+    let mean = w.iter().sum::<f64>() / period as f64;
+    let var = w.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (period - 1) as f64;
+    let std = var.sqrt();
+    if std < 1e-10 {
+        return 0.0;
+    }
+    let ann_sharpe = mean / std * 252_f64.sqrt();
+    (ann_sharpe / sharpe_cap).clamp(-1.0, 1.0)
+}
+
+/// Vol regime combined score — EQUAL_WEIGHT, long-only (clamped to [0, 1]).
+///
+/// VolatilitySignal(period=20, low_vol=0.12, high_vol=0.40) ×½ +
+/// ReturnQualitySignal(period=60, sharpe_cap=3.0) ×½, clamped to [0, 1].
+#[inline]
+fn vol_regime_combined(rets: &[f64]) -> f64 {
+    let vs = volatility_score(rets, 20, 0.12, 0.40);
+    let qs = return_quality_score(rets, 60, 3.0);
+    (0.5 * vs + 0.5 * qs).max(0.0)
+}
+
+// ── Per-symbol walk-forward ───────────────────────────────────────────────────
+
+struct Qua92SymbolResult {
+    // Run A: signal_expansion_ensemble
+    a_oos: Vec<f64>,
+    a_trades: Vec<f64>,
+    a_is_sh: Vec<f64>,
+    a_oos_sh: Vec<f64>,
+    // Run B: vol_regime_ensemble
+    b_oos: Vec<f64>,
+    b_trades: Vec<f64>,
+    b_is_sh: Vec<f64>,
+    b_oos_sh: Vec<f64>,
+    // Run C: vol_regime_standalone
+    c_oos: Vec<f64>,
+    c_trades: Vec<f64>,
+    c_is_sh: Vec<f64>,
+    c_oos_sh: Vec<f64>,
+}
+
+fn run_qua92_wf_symbol(
+    prices: &[f64],
+    train_window: usize,
+    oos_window: usize,
+    n_folds: usize,
+    commission: f64,
+) -> Qua92SymbolResult {
+    let n = prices.len();
+    // ReturnQualitySignal needs 60 bars; VolatilitySignal needs 20.
+    let min_warmup = 60_usize;
+
+    let rets = qf::returns(prices);
+    let rsi_vals = qf::rsi(prices, 14);
+    let bb_mid = qf::bb_mid(prices, 20);
+    let bb_upper = qf::bb_upper(prices, 20, 2.0);
+    let bb_lower = qf::bb_lower(prices, 20, 2.0);
+    let macd_hist = qf::macd_histogram(prices, 12, 26, 9);
+    let fast_ma = qf::ema(prices, 12);
+    let slow_ma = qf::ema(prices, 26);
+
+    // Rolling 20-bar vol for the vol-threshold regime gate (shared across runs)
+    let rolling_vols: Vec<f64> = (0..n)
+        .map(|b| {
+            if b < 21 {
+                return 0.01_f64;
+            }
+            let w = &rets[b - 20..b];
+            let m: f64 = w.iter().sum::<f64>() / 20.0;
+            (w.iter().map(|r| (r - m).powi(2)).sum::<f64>() / 19.0)
+                .sqrt()
+                .max(1e-8)
+        })
+        .collect();
+
+    // Bayesian IC combiner for the adaptive sleeve (NormalGamma, same as QUA-68)
+    let mut ic_comb = AdaptiveSignalCombiner::new(3);
+
+    let mut a_sigs = vec![0.0_f64; n];
+    let mut b_sigs = vec![0.0_f64; n];
+    let mut c_sigs = vec![0.0_f64; n];
+
+    for bar in 0..n - 1 {
+        let next_ret = (prices[bar + 1] - prices[bar]) / prices[bar];
+
+        if bar < min_warmup {
+            continue;
+        }
+
+        // Pure signal scores
+        let (mom, _, _) = momentum_signal(&rsi_vals[..=bar], &rets[..=bar], 20, 0.02);
+        let (mr, _, _) = mean_reversion_signal(
+            &bb_mid[..=bar],
+            &bb_upper[..=bar],
+            &bb_lower[..=bar],
+            &rets[..=bar],
+            2.0,
+        );
+        let (tf, _, _) =
+            trend_following_signal(&macd_hist[..=bar], &fast_ma[..=bar], &slow_ma[..=bar]);
+        let vol = vol_regime_combined(&rets[..=bar]);
+
+        // Adaptive sleeve: Bayesian IC-weighted combo of the 3 pure signals
+        let adaptive = ic_comb.combine(&[mom, mr, tf]);
+
+        // Regime gate (vol-threshold, identical to QUA-68 baseline)
+        let active = threshold_low_vol(&rolling_vols, bar);
+
+        // Run A — signal_expansion_ensemble (QUA-85 weights)
+        // momentum 35% / trend 30% / mean_reversion 15% / adaptive 20%
+        let a_raw = 0.35 * mom + 0.30 * tf + 0.15 * mr + 0.20 * adaptive;
+        a_sigs[bar] = quantise(a_raw, active, 0.20);
+
+        // Run B — vol_regime_ensemble (5-sleeve)
+        // momentum 30% / trend 25% / mean_reversion 20% / vol_regime 15% / adaptive 10%
+        let b_raw = 0.30 * mom + 0.25 * tf + 0.20 * mr + 0.15 * vol + 0.10 * adaptive;
+        b_sigs[bar] = quantise(b_raw, active, 0.20);
+
+        // Run C — vol_regime_standalone (long-only, no additional regime gate)
+        // vol ∈ [0, 1]; binary long (1.0) when score > 0.15, else flat.
+        c_sigs[bar] = if vol > 0.15 { 1.0 } else { 0.0 };
+
+        // Update IC tracker with realised IC observations
+        ic_comb.update_ic(0, mom * next_ret);
+        ic_comb.update_ic(1, mr * next_ret);
+        ic_comb.update_ic(2, tf * next_ret);
+    }
+
+    // Precompute net-return series for all three runs
+    let a_net = compute_net_returns(prices, &a_sigs, commission);
+    let b_net = compute_net_returns(prices, &b_sigs, commission);
+    let c_net = compute_net_returns(prices, &c_sigs, commission);
+
+    let mut result = Qua92SymbolResult {
+        a_oos: Vec::new(),
+        a_trades: Vec::new(),
+        a_is_sh: Vec::new(),
+        a_oos_sh: Vec::new(),
+        b_oos: Vec::new(),
+        b_trades: Vec::new(),
+        b_is_sh: Vec::new(),
+        b_oos_sh: Vec::new(),
+        c_oos: Vec::new(),
+        c_trades: Vec::new(),
+        c_is_sh: Vec::new(),
+        c_oos_sh: Vec::new(),
+    };
+
+    for fold in 0..n_folds {
+        let oos_start = train_window + fold * oos_window;
+        let oos_end = oos_start + oos_window;
+        if oos_end >= n {
+            break;
+        }
+        let is_start = oos_start.saturating_sub(train_window);
+
+        result.a_is_sh.push(sharpe_ratio(&a_net[is_start..oos_start]));
+        result.b_is_sh.push(sharpe_ratio(&b_net[is_start..oos_start]));
+        result.c_is_sh.push(sharpe_ratio(&c_net[is_start..oos_start]));
+
+        let oos_prices = &prices[oos_start..=oos_end];
+
+        let mut a_p = a_sigs[oos_start..oos_end].to_vec();
+        a_p.push(0.0);
+        let mut b_p = b_sigs[oos_start..oos_end].to_vec();
+        b_p.push(0.0);
+        let mut c_p = c_sigs[oos_start..oos_end].to_vec();
+        c_p.push(0.0);
+
+        let ar = run_backtest(oos_prices, &a_p, commission, 1.0);
+        let br = run_backtest(oos_prices, &b_p, commission, 1.0);
+        let cr = run_backtest(oos_prices, &c_p, commission, 1.0);
+
+        result.a_oos_sh.push(sharpe_ratio(&ar.net_returns));
+        result.b_oos_sh.push(sharpe_ratio(&br.net_returns));
+        result.c_oos_sh.push(sharpe_ratio(&cr.net_returns));
+
+        result.a_trades.extend(ar.trades.iter().map(|t| t.ret));
+        result.b_trades.extend(br.trades.iter().map(|t| t.ret));
+        result.c_trades.extend(cr.trades.iter().map(|t| t.ret));
+
+        result.a_oos.extend_from_slice(&ar.net_returns[1..]);
+        result.b_oos.extend_from_slice(&br.net_returns[1..]);
+        result.c_oos.extend_from_slice(&cr.net_returns[1..]);
+    }
+
+    result
+}
+
+// ── CLI entry point ───────────────────────────────────────────────────────────
+
+pub fn run_benchmark_qua92(args: BenchmarkQua92Args) -> anyhow::Result<()> {
+    let total_bars = args.train_window + args.n_folds * args.oos_window + 1;
+
+    println!("QUA-92: Vol Regime Sleeve — PF Gap Closure Attempt");
+    println!(
+        "  {} symbols | {} folds | {}d IS (rolling) | {}d OOS | {} bars/symbol",
+        args.n_symbols, args.n_folds, args.train_window, args.oos_window, total_bars
+    );
+    println!("  Synthetic: regime-switching GBM (75% LowVol/25% HighVol, 15%/15% drift)");
+    println!("  Vol sleeve: VolatilitySignal(20, 0.12, 0.40) + ReturnQualitySignal(60, 3.0)");
+    println!("  CRO targets: PF >= 1.26, MaxDD < 19.50%, Sharpe >= 1.00, WFE >= 0.80\n");
+
+    // Accumulators for each run
+    let mut a_oos: Vec<f64> = Vec::new();
+    let mut a_trades: Vec<f64> = Vec::new();
+    let mut a_is_sh: Vec<f64> = Vec::new();
+    let mut a_oos_sh: Vec<f64> = Vec::new();
+
+    let mut b_oos: Vec<f64> = Vec::new();
+    let mut b_trades: Vec<f64> = Vec::new();
+    let mut b_is_sh: Vec<f64> = Vec::new();
+    let mut b_oos_sh: Vec<f64> = Vec::new();
+
+    let mut c_oos: Vec<f64> = Vec::new();
+    let mut c_trades: Vec<f64> = Vec::new();
+    let mut c_is_sh: Vec<f64> = Vec::new();
+    let mut c_oos_sh: Vec<f64> = Vec::new();
+
+    for sym in 0..args.n_symbols {
+        // Same seed formula as QUA-68 for identical synthetic universe
+        let seed = 0xDEAD_BEEF_u64
+            .wrapping_add((sym as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let prices = synthetic_prices(total_bars, seed);
+        let r = run_qua92_wf_symbol(
+            &prices,
+            args.train_window,
+            args.oos_window,
+            args.n_folds,
+            args.commission,
+        );
+
+        a_oos.extend_from_slice(&r.a_oos);
+        a_trades.extend_from_slice(&r.a_trades);
+        a_is_sh.extend_from_slice(&r.a_is_sh);
+        a_oos_sh.extend_from_slice(&r.a_oos_sh);
+
+        b_oos.extend_from_slice(&r.b_oos);
+        b_trades.extend_from_slice(&r.b_trades);
+        b_is_sh.extend_from_slice(&r.b_is_sh);
+        b_oos_sh.extend_from_slice(&r.b_oos_sh);
+
+        c_oos.extend_from_slice(&r.c_oos);
+        c_trades.extend_from_slice(&r.c_trades);
+        c_is_sh.extend_from_slice(&r.c_is_sh);
+        c_oos_sh.extend_from_slice(&r.c_oos_sh);
+    }
+
+    // ── Aggregate metrics ─────────────────────────────────────────────────────
+    let a_sharpe = sharpe_ratio(&a_oos);
+    let b_sharpe = sharpe_ratio(&b_oos);
+    let c_sharpe = sharpe_ratio(&c_oos);
+
+    let a_pf = profit_factor(&a_trades);
+    let b_pf = profit_factor(&b_trades);
+    let c_pf = profit_factor(&c_trades);
+
+    let a_maxdd = max_drawdown_from_returns(&a_oos);
+    let b_maxdd = max_drawdown_from_returns(&b_oos);
+    let c_maxdd = max_drawdown_from_returns(&c_oos);
+
+    let a_wfe = mean_wfe(&a_is_sh, &a_oos_sh);
+    let b_wfe = mean_wfe(&b_is_sh, &b_oos_sh);
+    let c_wfe = mean_wfe(&c_is_sh, &c_oos_sh);
+
+    let n_folds_actual = a_oos_sh.len();
+
+    // ── Results table ─────────────────────────────────────────────────────────
+    println!("┌────────────────────────────┬──────────────┬──────────────┬──────────────┐");
+    println!("│  Metric                    │    Run A     │    Run B     │    Run C     │");
+    println!("│                            │ 4-sleeve WF  │ 5-sleeve WF  │ vol_standalone│");
+    println!("├────────────────────────────┼──────────────┼──────────────┼──────────────┤");
+    println!(
+        "│  OOS Sharpe (ann.)         │  {:>9.3}   │  {:>9.3}   │  {:>9.3}   │",
+        a_sharpe, b_sharpe, c_sharpe
+    );
+    println!(
+        "│  Profit Factor             │  {:>9}   │  {:>9}   │  {:>9}   │",
+        fmt_pf(a_pf),
+        fmt_pf(b_pf),
+        fmt_pf(c_pf)
+    );
+    println!(
+        "│  Max Drawdown              │  {:>8.2} %  │  {:>8.2} %  │  {:>8.2} %  │",
+        a_maxdd * 100.0,
+        b_maxdd * 100.0,
+        c_maxdd * 100.0
+    );
+    println!(
+        "│  WFE                       │  {:>9.3}   │  {:>9.3}   │  {:>9.3}   │",
+        a_wfe, b_wfe, c_wfe
+    );
+    println!(
+        "│  Total OOS Folds           │  {:>9}   │  {:>9}   │  {:>9}   │",
+        n_folds_actual,
+        b_oos_sh.len(),
+        c_oos_sh.len()
+    );
+    println!("└────────────────────────────┴──────────────┴──────────────┴──────────────┘");
+
+    // ── Delta vs Run A ────────────────────────────────────────────────────────
+    let b_pf_v = if b_pf.is_infinite() { 99.0 } else { b_pf };
+    let a_pf_v = if a_pf.is_infinite() { 99.0 } else { a_pf };
+
+    println!("\n── Run B vs Run A (vol_regime_ensemble vs signal_expansion) ─────────────");
+    println!(
+        "  Sharpe  Δ: {:>+.3}  ({:.3} → {:.3})",
+        b_sharpe - a_sharpe,
+        a_sharpe,
+        b_sharpe
+    );
+    println!(
+        "  PF      Δ: {:>+.3}  ({} → {})",
+        b_pf_v - a_pf_v,
+        fmt_pf(a_pf),
+        fmt_pf(b_pf)
+    );
+    println!(
+        "  MaxDD   Δ: {:>+.2} %  ({:.2}% → {:.2}%)",
+        (b_maxdd - a_maxdd) * 100.0,
+        a_maxdd * 100.0,
+        b_maxdd * 100.0
+    );
+    println!(
+        "  WFE     Δ: {:>+.3}  ({:.3} → {:.3})",
+        b_wfe - a_wfe,
+        a_wfe,
+        b_wfe
+    );
+
+    // ── CRO gate assessment ───────────────────────────────────────────────────
+    println!("\n── CRO Gate Assessment (Run B — vol_regime_ensemble) ────────────────────");
+
+    let gate_sharpe = b_sharpe >= 1.00;
+    let gate_pf = b_pf_v >= 1.26;
+    let gate_maxdd = b_maxdd < 0.195;
+    let gate_wfe = b_wfe >= 0.80;
+    let gate_c_sharpe = c_sharpe >= 0.50;
+
+    let all_pass = gate_sharpe && gate_pf && gate_maxdd && gate_wfe && gate_c_sharpe;
+
+    println!(
+        "  [{}] OOS Sharpe >= 1.00:  {:.3}",
+        if gate_sharpe { "PASS" } else { "FAIL" },
+        b_sharpe
+    );
+    println!(
+        "  [{}] Profit Factor >= 1.26: {}",
+        if gate_pf { "PASS" } else { "FAIL" },
+        fmt_pf(b_pf)
+    );
+    println!(
+        "  [{}] Max Drawdown < 19.50%: {:.2}%",
+        if gate_maxdd { "PASS" } else { "FAIL" },
+        b_maxdd * 100.0
+    );
+    println!(
+        "  [{}] WFE >= 0.80:          {:.3}",
+        if gate_wfe { "PASS" } else { "FAIL" },
+        b_wfe
+    );
+    println!(
+        "  [{}] Run C Sharpe >= 0.50 (genuine alpha): {:.3}",
+        if gate_c_sharpe { "PASS" } else { "FAIL" },
+        c_sharpe
+    );
+    println!(
+        "\n  → Overall: {}",
+        if all_pass {
+            "PASS — vol_regime_ensemble clears all CRO gates. Submit to CRO for gate decision."
+        } else {
+            "FAIL — one or more CRO gates not met. Review Run B metrics and notify CRO."
+        }
+    );
+
+    // Also check PF improvement vs Run A
+    if b_pf_v > a_pf_v {
+        println!("  → PF improvement confirmed (+{:.3})", b_pf_v - a_pf_v);
+    } else {
+        println!("  → PF did NOT improve vs Run A ({:.3} vs {:.3})", b_pf_v, a_pf_v);
+        println!("     CRO will reject vol sleeve per gate-decision rules.");
+    }
+
+    // ── Write results to disk ─────────────────────────────────────────────────
+    let out_dir = Path::new(&args.output_dir);
+    fs::create_dir_all(out_dir)?;
+
+    // results.json
+    let results_json = serde_json::json!({
+        "signal_expansion_ensemble": {
+            "run": "A",
+            "oos_sharpe": a_sharpe,
+            "profit_factor": if a_pf.is_infinite() { 99.0 } else { a_pf },
+            "wf_efficiency": a_wfe,
+            "max_drawdown": a_maxdd,
+            "n_folds": n_folds_actual,
+            "passes": a_sharpe >= 0.60 && a_pf_v >= 1.10 && a_maxdd < 0.20 && a_wfe >= 0.20
+        },
+        "vol_regime_ensemble": {
+            "run": "B",
+            "oos_sharpe": b_sharpe,
+            "profit_factor": if b_pf.is_infinite() { 99.0 } else { b_pf },
+            "wf_efficiency": b_wfe,
+            "max_drawdown": b_maxdd,
+            "n_folds": b_oos_sh.len(),
+            "passes": all_pass
+        },
+        "vol_regime_standalone": {
+            "run": "C",
+            "oos_sharpe": c_sharpe,
+            "profit_factor": if c_pf.is_infinite() { 99.0 } else { c_pf },
+            "wf_efficiency": c_wfe,
+            "max_drawdown": c_maxdd,
+            "n_folds": c_oos_sh.len(),
+            "passes": gate_c_sharpe
+        }
+    });
+
+    fs::write(
+        out_dir.join("results.json"),
+        serde_json::to_string_pretty(&results_json)?,
+    )?;
+
+    // validation_table.md
+    let md = format!(
+        "# QUA-92 Vol Regime Sleeve Results\n\n\
+        ## CRO Gate Metrics\n\n\
+        | Run | Sharpe | PF | WFE | Max DD | Folds | Status |\n\
+        |-----|--------|-----|-----|--------|-------|--------|\n\
+        | signal_expansion_ensemble (Run A)  | {:.3} | {} | {:.3} | {:.2}% | {} | {} |\n\
+        | vol_regime_ensemble (Run B)        | {:.3} | {} | {:.3} | {:.2}% | {} | {} |\n\
+        | vol_regime_standalone (Run C)      | {:.3} | {} | {:.3} | {:.2}% | {} | {} |\n\n\
+        ## CRO Thresholds (Run B)\n\n\
+        | Gate | Target | Result |\n\
+        |------|--------|--------|\n\
+        | Sharpe | >= 1.00 | {} |\n\
+        | PF | >= 1.26 | {} |\n\
+        | MaxDD | < 19.50% | {} |\n\
+        | WFE | >= 0.80 | {} |\n\
+        | Run C Sharpe (alpha check) | >= 0.50 | {} |\n",
+        a_sharpe, fmt_pf(a_pf), a_wfe, a_maxdd * 100.0, n_folds_actual,
+        if a_sharpe >= 0.60 && a_pf_v >= 1.10 && a_maxdd < 0.20 && a_wfe >= 0.20 { "PASS" } else { "FAIL" },
+        b_sharpe, fmt_pf(b_pf), b_wfe, b_maxdd * 100.0, b_oos_sh.len(),
+        if all_pass { "PASS" } else { "FAIL" },
+        c_sharpe, fmt_pf(c_pf), c_wfe, c_maxdd * 100.0, c_oos_sh.len(),
+        if gate_c_sharpe { "PASS" } else { "FAIL" },
+        if gate_sharpe { "PASS" } else { "FAIL" },
+        if gate_pf { "PASS" } else { "FAIL" },
+        if gate_maxdd { "PASS" } else { "FAIL" },
+        if gate_wfe { "PASS" } else { "FAIL" },
+        if gate_c_sharpe { "PASS" } else { "FAIL" },
+    );
+
+    fs::write(out_dir.join("validation_table.md"), md)?;
+
+    println!(
+        "\n  Results written to {}/",
+        args.output_dir
+    );
 
     Ok(())
 }

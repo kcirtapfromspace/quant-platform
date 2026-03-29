@@ -60,6 +60,8 @@ enum Commands {
 pub enum BenchmarkSuite {
     /// QUA-68: Bayesian vs EMA AdaptiveSignalCombiner walk-forward benchmark.
     Qua68(cmd_benchmark::BenchmarkQua68Args),
+    /// QUA-92: Vol regime sleeve — PF gap closure attempt (5-sleeve ensemble).
+    Qua92(cmd_benchmark::BenchmarkQua92Args),
 }
 
 #[derive(Subcommand)]
@@ -104,6 +106,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Backtest(args) => cmd_backtest::run_backtest_cmd(args),
         Commands::Benchmark { suite } => match suite {
             BenchmarkSuite::Qua68(args) => cmd_benchmark::run_benchmark_qua68(args),
+            BenchmarkSuite::Qua92(args) => cmd_benchmark::run_benchmark_qua92(args),
         },
         Commands::Serve(args) => cmd_serve::run_serve(args),
     }

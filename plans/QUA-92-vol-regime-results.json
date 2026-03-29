@@ -1,0 +1,29 @@
+{
+  "signal_expansion_ensemble": {
+    "max_drawdown": 0.33740542359683734,
+    "n_folds": 3200,
+    "oos_sharpe": 0.47499570758262105,
+    "passes": false,
+    "profit_factor": 1.482739778528437,
+    "run": "A",
+    "wf_efficiency": 0.5602606196928087
+  },
+  "vol_regime_ensemble": {
+    "max_drawdown": 0.27305232112144484,
+    "n_folds": 3200,
+    "oos_sharpe": 0.6481057863733043,
+    "passes": false,
+    "profit_factor": 1.6472030807995697,
+    "run": "B",
+    "wf_efficiency": 0.5710982421534475
+  },
+  "vol_regime_standalone": {
+    "max_drawdown": 0.2572132106769676,
+    "n_folds": 3200,
+    "oos_sharpe": 0.8981320450992365,
+    "passes": true,
+    "profit_factor": 1.934541964497678,
+    "run": "C",
+    "wf_efficiency": 0.9050632527396184
+  }
+}
