@@ -32,7 +32,11 @@ struct Cli {
     metrics_file: String,
 
     /// Directory containing backtest result sub-folders.
-    #[arg(long, env = "BACKTEST_RESULTS_DIR", default_value = "/data/backtest-results")]
+    #[arg(
+        long,
+        env = "BACKTEST_RESULTS_DIR",
+        default_value = "/data/backtest-results"
+    )]
     backtest_results_dir: String,
 
     /// Enable verbose (DEBUG) logging.
