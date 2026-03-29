@@ -35,6 +35,8 @@
 
 - [ ] `quant-cli` pod running: check k8s pod status (`hypothesis-validation` namespace)
 - [ ] Strategy loaded: `run2_ensemble` (momentum 40%, trend 35%, adaptive 25%)
+- [ ] **Kelly fraction: 100%** (CRO-confirmed: MaxDD 14.05%, 600 bps buffer below 20% gate)
+  - If signal_expansion_ensemble is primary instead: Kelly fraction MUST be 90% (CRO required)
 - [ ] Circuit breaker env vars confirmed:
   - `QUANT_DD_CIRCUIT_BREAKER=0.08` (8% DD hard stop)
   - `QUANT_DAILY_PNL_HALT=-0.03` (-3% daily P&L halt)
@@ -141,19 +143,28 @@ Run `plans/2026-03-28-COO-nav-reconciliation-procedure.md` for the first time:
 
 ---
 
-## SECTION G: Shadow Mode (pending CPO decision)
+## SECTION G: Shadow Mode
 
-*Status: CPO decision pending on whether `signal_expansion_ensemble` (QUA-85) runs in
-shadow mode from Day 1 or after week 1.*
+**CRO default recommendation** (per `plans/2026-03-30-CRO-day1-readiness-acknowledgment.md`):
+- **Primary:** `run2_ensemble` at 100% Kelly
+- **Shadow:** `signal_expansion_ensemble` at 90% Kelly from Day 1
 
-If Day 1 shadow mode authorized:
+*Status: CPO decision still pending. If no CPO directive before 09:15 ET Monday,
+COO will apply CRO's recommendation as the operational default.*
+
+**Kelly fractions are non-negotiable regardless of which is primary:**
+- `run2_ensemble`: 100% Kelly
+- `signal_expansion_ensemble`: 90% Kelly REQUIRED (MaxDD proximity — CRO standing requirement)
+
+If Day 1 shadow mode active (CRO default):
 - [ ] `signal_expansion_ensemble` configured to compute signals/positions but NOT submit orders
-- [ ] Shadow mode P&L tracked separately in `daily_nav` or separate shadow table
-- [ ] COO confirms shadow mode output is visible in `run_e_state.json` alongside primary strategy
+- [ ] Kelly fraction for shadow strategy confirmed at 90% in engine config
+- [ ] Shadow mode P&L tracked separately (separate DuckDB table or `daily_nav` with strategy tag)
+- [ ] COO confirms shadow mode output visible in `run_e_state.json` alongside primary strategy
+- [ ] Log in ops log: "Shadow mode ACTIVE from Day 1 — signal_expansion_ensemble at 90% Kelly"
 
-If shadow mode deferred to week 2:
-- [ ] Note in ops log: "Shadow mode deferred per CPO decision"
-- [ ] Reminder to COO: activate shadow mode before 2026-04-06 market open
+If CPO directs shadow mode deferred to week 2:
+- [ ] Note in ops log: "Shadow mode deferred per CPO decision — will activate before 2026-04-06 open"
 
 ---
 
