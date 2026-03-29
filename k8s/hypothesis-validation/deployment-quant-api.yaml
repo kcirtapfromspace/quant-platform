@@ -61,7 +61,6 @@ spec:
                 secretKeyRef:
                   name: quant-api-secret
                   key: api_key
-                  optional: true
           volumeMounts:
             - name: market-data
               mountPath: /data
