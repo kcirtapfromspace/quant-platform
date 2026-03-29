@@ -5,17 +5,15 @@ on:
     branches: [main, develop]
     paths:
       - "quant-rs/**"
-      - "quant/**"
       - "demo/**"
-      - "pyproject.toml"
+      - "Dockerfile.runE"
       - ".github/workflows/docker-build.yml"
   pull_request:
     branches: [main, develop]
     paths:
       - "quant-rs/**"
-      - "quant/**"
       - "demo/**"
-      - "pyproject.toml"
+      - "Dockerfile.runE"
   workflow_dispatch: {}
 
 concurrency:
@@ -96,11 +94,11 @@ jobs:
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu-cache,mode=max
 
   # ---------------------------------------------------------------------------
-  # Build quant-py ARM64 image (Python runE daemon) and push to ghcr.io
-  # QUA-90: runE paper-trading sidecar
+  # Build quant-run-e ARM64 image (pure-Rust run-E daemon) — replaces quant-py
+  # QUA-99: Python daemon deleted; quant run loop wires signal pipeline + Alpaca
   # ---------------------------------------------------------------------------
-  build-py:
-    name: Build quant-py ARM64 image
+  build-run-e:
+    name: Build quant-run-e ARM64 image
     runs-on: ubuntu-latest
 
     permissions:
@@ -128,27 +126,27 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Docker metadata
-        id: meta-py
+        id: meta-run-e
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-py
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-run-e
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push quant-py
+      - name: Build and push quant-run-e
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./quant/Dockerfile.runE
+          file: ./Dockerfile.runE
           platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta-py.outputs.tags }}
-          labels: ${{ steps.meta-py.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-py:cache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-py:cache,mode=max
+          tags: ${{ steps.meta-run-e.outputs.tags }}
+          labels: ${{ steps.meta-run-e.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-run-e:cache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/quant-run-e:cache,mode=max
 
   # ---------------------------------------------------------------------------
   # Build quant-dashboard ARM64 image (React+Express frontend) — QUA-95

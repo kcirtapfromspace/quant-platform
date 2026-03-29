@@ -1,0 +1,28 @@
+# ── quant-run-e: pure-Rust daily rebalance daemon ─────────────────────────────
+# Target: linux/arm64 (Turing Pi cluster, Raspberry Pi CM4 / Jetson Orin Nano)
+# Replaces the Python quant-py image — full feature parity via quant-rs CLI.
+#
+# Usage:
+#   docker run --rm \
+#     -v /data:/data \
+#     -e ALPACA_API_KEY=... -e ALPACA_SECRET_KEY=... -e ALPACA_PAPER=true \
+#     quant-run-e:latest \
+#     run loop --db /data/market.duckdb --oms-db /data/quant_oms.db --schedule 16:05
+FROM rust:1.78 AS builder
+WORKDIR /app
+COPY quant-rs/ quant-rs/
+WORKDIR /app/quant-rs
+RUN cargo build --release --bin quant
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user (UID/GID 999 matches quant-rs convention)
+RUN groupadd -g 999 quant && useradd -u 999 -g 999 -s /sbin/nologin quant
+RUN mkdir -p /data && chown quant:quant /data
+
+COPY --from=builder /app/quant-rs/target/release/quant /usr/local/bin/quant
+
+USER quant
+ENTRYPOINT ["quant"]

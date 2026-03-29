@@ -44,25 +44,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: >
-          cargo clippy
-          -p quant-features
-          -p quant-risk
-          -p quant-signals
-          -p quant-backtest
-          -p quant-oms
-          -p quant-portfolio
-          -p quant-data
-          -p quant-cli
-          -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
       - name: cargo test
-        run: >
-          cargo test
-          -p quant-features
-          -p quant-risk
-          -p quant-signals
-          -p quant-backtest
-          -p quant-oms
-          -p quant-portfolio
-          -p quant-data
+        run: cargo test --workspace
