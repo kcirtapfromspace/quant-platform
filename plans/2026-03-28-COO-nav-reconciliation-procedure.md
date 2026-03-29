@@ -2,8 +2,9 @@
 
 **Author:** COO (50088c37)
 **Date:** 2026-03-28
+**Last updated:** 2026-03-28 (session 3 — CRO flags from QUA-77 sign-off incorporated)
 **Frequency:** Every trading day by 17:30 ET
-**Status:** ACTIVE
+**Status:** ACTIVE — CRO-APPROVED (QUA-77)
 
 ---
 
@@ -12,6 +13,60 @@
 Produce a definitive daily NAV and confirm zero position breaks between the OMS
 (`data/paper_trading.duckdb`) and Alpaca broker state. This is the operational
 basis for all performance reporting and CRO drawdown monitoring.
+
+---
+
+## CRO Flags (QUA-77 — required operational notes)
+
+### Flag 1 — Intraday vs EOD Drawdown Are Two Separate Measurements
+
+The circuit breaker (`quant-risk` crate) monitors **intraday** drawdown against a running
+peak using live prices. This EOD reconciliation uses **closing prices only**.
+
+**Implication:** A circuit breaker may trip intraday at 8% DD even if the EOD NAV shows
+a smaller drawdown (if prices recovered into the close). This is correct behavior — both
+measurements serve different purposes:
+
+| Measurement | When | Purpose | Authoritative for |
+|-------------|------|---------|------------------|
+| Intraday circuit breaker DD | Real-time | Operational protection | Trading halt decisions |
+| EOD NAV reconciliation DD | After close | Performance reporting | CRO weekly report |
+
+**COO requirement:** Track both numbers. If a circuit breaker trip occurred intraday but
+EOD drawdown is below 8%, the trip is still a real event and MUST be documented in the ops
+log. Do NOT backfill away circuit breaker events based on EOD recovery.
+
+---
+
+### Flag 2 — Sleeve P&L Attribution: Automation Gap (Week 1 Fallback)
+
+The `daily_sleeve_pnl` schema is defined, but automated sleeve-level P&L attribution from
+the Rust `quant-cli` engine does not exist yet. CTO has been asked to implement before
+paper trading week 2.
+
+**Week 1 manual fallback procedure (if CTO automation not ready):**
+
+1. At EOD, retrieve fills from Alpaca for the day:
+   `GET /v2/orders?status=filled&after=<today 09:30>&until=<today 16:00>`
+
+2. Cross-reference fill symbols against `run_e_state.json` to identify which sleeve
+   each symbol was allocated from on that day (the state file records sleeve → symbol mapping)
+
+3. Calculate per-sleeve realized P&L:
+   `sleeve_pnl = sum(fill_qty × (fill_price - avg_cost) for each fill in sleeve)`
+
+4. For unrealized P&L component: use `closing_price - avg_entry × current_qty` by sleeve
+
+5. Record manually in `daily_sleeve_pnl` table with `notes = 'manual attribution - pre-automation'`
+
+**CRO note:** Yellow threshold response (DD ≥ 10%) requires sleeve P&L attribution.
+If a Yellow event occurs in week 1 before automation is ready, COO must use the manual
+fallback above and clearly note it in the CRO brief.
+
+**CTO required:** Implement automated sleeve attribution before paper trading week 2
+(deadline: 2026-04-06 market open).
+
+---
 
 ---
 

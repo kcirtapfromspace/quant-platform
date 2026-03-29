@@ -40,14 +40,12 @@ pub async fn require_api_key(
         .get("X-API-Key")
         .and_then(|v| v.to_str().ok())
         .or_else(|| {
-            req.uri()
-                .query()
-                .and_then(|q| {
-                    q.split('&').find_map(|part| {
-                        let (k, v) = part.split_once('=')?;
-                        (k == "api_key").then_some(v)
-                    })
+            req.uri().query().and_then(|q| {
+                q.split('&').find_map(|part| {
+                    let (k, v) = part.split_once('=')?;
+                    (k == "api_key").then_some(v)
                 })
+            })
         })
         .unwrap_or("");
 

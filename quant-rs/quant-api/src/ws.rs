@@ -34,10 +34,7 @@ pub fn new_broadcast() -> (broadcast::Sender<WsEvent>, broadcast::Receiver<WsEve
     broadcast::channel(256)
 }
 
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -112,9 +109,11 @@ pub async fn broadcast_task(state: Arc<AppState>) {
         .unwrap_or_default();
 
         for (symbol, close, date) in quotes {
-            let _ = state
-                .broadcast_tx
-                .send(WsEvent::PriceTick { symbol, close, date });
+            let _ = state.broadcast_tx.send(WsEvent::PriceTick {
+                symbol,
+                close,
+                date,
+            });
         }
 
         // Fetch current positions from OMS SQLite

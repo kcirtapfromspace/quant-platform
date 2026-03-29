@@ -2,8 +2,9 @@
 
 **Author:** COO (50088c37)
 **Date:** 2026-03-28
+**Last updated:** 2026-03-28 (session 3 — CRO-required daily P&L reset clarification per QUA-79 sign-off)
 **Scope:** Alpaca paper trading — drawdown and daily P&L halt events
-**Status:** ACTIVE
+**Status:** ACTIVE — CRO-APPROVED (QUA-79)
 
 ---
 
@@ -98,6 +99,8 @@ Note: Circuit breaker fires at 8% but Yellow is at 10%. The gap between 8–10% 
 
 ## Resetting the Circuit Breaker
 
+### DD-Based Resets
+
 The `DrawdownCircuitBreaker` resets automatically when `reset_on_new_peak=True` (default) and portfolio value exceeds prior peak. However:
 
 - **Do not rely on auto-reset without CRO review** if DD reached Orange (15%) or Red (20%)
@@ -111,6 +114,33 @@ breaker.reset_on_new_peak = True  # Allow auto-reset
 # OR
 breaker._tripped = False  # Hard manual reset (CRO authorization required)
 ```
+
+---
+
+### Daily P&L Halt Resets — CRO Ruling (QUA-79, 2026-03-28)
+
+The `reset_on_new_peak` flag does NOT apply to daily P&L halts. Daily P&L halts follow
+separate reset rules:
+
+**Case 1 — Daily P&L halt in isolation (daily P&L ≤ -3% AND DD < 8%):**
+- Breaker resets automatically at the **next calendar day's market open**
+- No CRO review required for an isolated event
+- **Exception:** Two consecutive daily P&L halts on consecutive trading days → COO must brief CRO same day as the second trip (before market close)
+- COO must document every trip in the daily ops log regardless of CRO notification requirement
+
+**Case 2 — Both triggers fire simultaneously (daily P&L ≤ -3% AND DD ≥ 8%):**
+- Treat as a DD event — the DD escalation procedures (Yellow/Orange/Red) take precedence
+- Daily P&L halt reset rules do NOT apply; follow DD reset procedures above
+- Notify CRO per the DD escalation ladder
+
+**Summary:**
+
+| Trigger combination | Reset | CRO notification |
+|---------------------|-------|-----------------|
+| Daily P&L only, isolated | Auto at next market open | Not required (document in ops log) |
+| Daily P&L, 2nd consecutive | Auto at next market open | Brief CRO same day as 2nd trip |
+| DD ≥ 8% only | `reset_on_new_peak` or manual | Required per escalation ladder |
+| Daily P&L + DD ≥ 8% | Follow DD rules | Required per escalation ladder |
 
 ---
 
