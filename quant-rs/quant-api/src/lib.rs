@@ -105,7 +105,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/signals", get(routes::signals::get_signals))
         .route("/strategies", get(routes::strategies::get_strategies))
         .route(
-            "/history/:symbol",
+            "/history/{symbol}",
             get(routes::market::get_history),
         )
         .route(
