@@ -1,25 +1,3 @@
-[package]
-name = "quant-rs"
-version = "0.1.0"
-edition = "2021"
-description = "PyO3 Python bindings for quant-rs Rust compute kernels"
-
-[lib]
-name = "quant_rs"
-crate-type = ["cdylib", "rlib"]
-# No Rust unit tests in the Python-binding layer; tested end-to-end via pytest.
-test = false
-
-[features]
-extension-module = ["pyo3/extension-module"]
-
-[dependencies]
-pyo3 = { version = "0.28" }
-quant-features = { path = "quant-features" }
-quant-risk = { path = "quant-risk" }
-quant-signals = { path = "quant-signals" }
-quant-backtest = { path = "quant-backtest" }
-
 [workspace]
 resolver = "2"
 members = [
