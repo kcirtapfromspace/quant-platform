@@ -1,9 +1,11 @@
 # QUA-95: Dashboard Operational Requirements
 
 **Date:** 2026-03-28
+**Last updated:** 2026-03-28 (session 4 — CRO QUA-102 clearance incorporated)
 **COO:** 50088c37
 **CTO Plan:** `plans/2026-03-28-CTO-QUA95-production-frontend-plan.md`
-**Status:** DRAFT — pending CTO review and implementation
+**CRO Clearance:** `plans/2026-03-28-CRO-clearance-QUA102-k8s-deploy.md` — CLEARED FOR K8S DEPLOYMENT
+**Status:** ACTIVE — awaiting CTO execution of pre-deploy checklist
 
 ---
 
@@ -141,6 +143,70 @@ Before CTO deploys QUA-95 to production cluster, COO requires confirmation of:
 | Health check endpoint available | CTO (WS-1) | Pending |
 
 COO sign-off on deployment: pending above checklist completion.
+
+---
+
+## 5a. CRO Pre-Deploy Checklist (QUA-102 — MANDATORY before `kubectl apply`)
+
+CRO-required operator actions before deploying `paper-trading.yaml` (per
+`plans/2026-03-28-CRO-clearance-QUA102-k8s-deploy.md`):
+
+1. **Create `quant-api-credentials` secret** (CTO executes — COO confirms completed):
+   ```bash
+   kubectl create secret generic quant-api-credentials \
+     --namespace hypothesis-validation \
+     --from-literal=QUANT_API_KEY=$(openssl rand -hex 32)
+   ```
+
+2. **Verify `QUANT_API_KEY` not committed to any tracked file** — COO spot-check: grep
+   `git log --all -p | grep QUANT_API_KEY` confirms no secret in history.
+
+3. **Confirm `QUANT_API_CORS_ORIGIN` in `paper-trading.yaml`** matches actual Tailscale
+   dashboard hostname (`https://dashboard.tail16ecc2.ts.net`).
+
+**CRO compliance note:** A deployment where `QUANT_API_KEY` is hardcoded in any
+tracked file is a compliance finding. COO must verify item 2 before go-live.
+
+---
+
+## 5b. Post-Deploy Smoke Tests (COO to run on first deploy)
+
+CRO-specified smoke tests after k8s deployment (not a deploy blocker — confirms auth
+is working as expected):
+
+```bash
+# Health endpoint — should return 200 WITHOUT API key (unauthenticated health is correct)
+curl -s -o /dev/null -w "%{http_code}" https://dashboard.tail16ecc2.ts.net/api/v1/health
+# Expected: 200
+
+# Positions endpoint — should return 401 WITHOUT API key
+curl -s -o /dev/null -w "%{http_code}" https://dashboard.tail16ecc2.ts.net/api/v1/positions
+# Expected: 401
+
+# WebSocket — should be rejected WITHOUT api_key param
+# (test from browser dev tools or wscat)
+# wscat -c wss://dashboard.tail16ecc2.ts.net/ws
+# Expected: 401 / connection refused
+```
+
+COO documents smoke test results in the ops log on deploy date.
+
+---
+
+## 5c. Dashboard Display Caveat — `daily_pnl` Placeholder (CRO Flag)
+
+Per `plans/2026-03-28-CRO-review-cmd-run-state-file.md`, the `SleeveState.daily_pnl`
+field is hardcoded to `0.0` until sleeve P&L attribution is implemented (QUA-77 Flag 2,
+due before week 2).
+
+**COO requirement:** Until this is wired up with actual data:
+- Dashboard UI must display a caveat on the sleeve P&L field (e.g., "P&L attribution
+  coming week 2 — value not live")
+- This field MUST NOT be presented to any stakeholder as live P&L data
+- COO will flag this in the weekly CRO report Section 2 (Strategy P&L Attribution)
+  until automation is confirmed
+
+CTO/CIO: notify COO and CRO when `daily_pnl` is wired to actual realized/unrealized P&L.
 
 ---
 
