@@ -16,23 +16,23 @@ use tracing_subscriber::EnvFilter;
 )]
 struct Cli {
     /// Path to the DuckDB market data file.
-    #[arg(long)]
+    #[arg(long, env = "QUANT_DB_PATH", default_value = "/data/quant.duckdb")]
     db: String,
 
     /// Path to the SQLite OMS state file (enables order/position endpoints).
-    #[arg(long)]
+    #[arg(long, env = "OMS_DB_PATH")]
     oms_db: Option<String>,
 
     /// Port to listen on.
-    #[arg(long, default_value = "8080")]
+    #[arg(long, env = "PORT", default_value = "8080")]
     port: u16,
 
     /// Prometheus textfile written by `quant run once`.
-    #[arg(long, default_value = "/tmp/quant_paper_metrics.prom")]
+    #[arg(long, env = "METRICS_PATH", default_value = "/data/metrics.prom")]
     metrics_file: String,
 
     /// Directory containing backtest result sub-folders.
-    #[arg(long, default_value = "./backtest-results")]
+    #[arg(long, env = "BACKTEST_RESULTS_DIR", default_value = "/data/backtest-results")]
     backtest_results_dir: String,
 
     /// Enable verbose (DEBUG) logging.
