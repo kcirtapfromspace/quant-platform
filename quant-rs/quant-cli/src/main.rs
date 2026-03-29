@@ -11,6 +11,7 @@
 //! quant run loop      --db <path> --schedule 16:05 [--cash 1000000] [--optimizer risk_parity] [--oms-db ./quant_oms.db]
 //! quant run status    [--oms-db ./quant_oms.db]
 //! quant backtest      --db <path> --symbol AAPL [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+//! quant serve         --db <path> [--oms-db ./quant_oms.db] [--port 8080]
 //! ```
 
 mod cmd_backtest;
