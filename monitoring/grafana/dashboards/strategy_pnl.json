@@ -311,6 +311,186 @@
           "legendFormat": "Cumulative P&L"
         }
       ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Rolling Sharpe (30d)",
+      "description": "Annualised Sharpe ratio over the trailing 30 trading days. Shows N/A when fewer than 10 samples are available.",
+      "gridPos": { "x": 0, "y": 27, "w": 8, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "noValue": "N/A",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 1.0 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "quant_paper_sharpe_rolling_30d",
+          "legendFormat": "Sharpe 30d",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Rolling Sharpe (7d)",
+      "description": "Annualised Sharpe ratio over the trailing 7 trading days. Shows N/A when fewer than 3 samples are available.",
+      "gridPos": { "x": 8, "y": 27, "w": 8, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "noValue": "N/A",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 1.0 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "quant_paper_sharpe_rolling_7d",
+          "legendFormat": "Sharpe 7d",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Running Profit Factor",
+      "description": "Gross winning returns / abs(gross losing returns) over the historical return window. Shows N/A when there are no losing periods.",
+      "gridPos": { "x": 16, "y": 27, "w": 8, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "noValue": "N/A",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 1.0 },
+              { "color": "green", "value": 1.5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "quant_paper_profit_factor",
+          "legendFormat": "Profit Factor",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Gross Exposure (USD)",
+      "description": "Total absolute notional value of simulated portfolio. Threshold alerts at $800k (yellow) and $950k (red) vs $1M notional.",
+      "gridPos": { "x": 0, "y": 31, "w": 6, "h": 8 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 800000 },
+              { "color": "red", "value": 950000 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "quant_paper_gross_exposure_usd",
+          "legendFormat": "Gross Exposure",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "bargauge",
+      "title": "Position Concentration (% NAV by Symbol)",
+      "description": "Per-symbol weight as fraction of portfolio NAV. Sourced from optimizer target weights after each rebalance.",
+      "gridPos": { "x": 6, "y": 31, "w": 18, "h": 8 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 0.3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.2 },
+              { "color": "red", "value": 0.25 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "quant_paper_position_weight",
+          "legendFormat": "{{symbol}}",
+          "instant": true
+        }
+      ]
     }
   ]
 }

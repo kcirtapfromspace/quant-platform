@@ -129,6 +129,16 @@ struct SignalFilter {
     trend_following: bool,
 }
 
+struct RebalanceConfig<'a> {
+    universe: &'a [String],
+    portfolio_cash: f64,
+    optimizer: OptimizationMethod,
+    signal_filter: &'a SignalFilter,
+    lookback_days: usize,
+    min_order_value: f64,
+    metrics_file: &'a str,
+}
+
 impl SignalFilter {
     fn from_str(s: &str) -> Self {
         let lower = s.to_lowercase();
@@ -157,13 +167,15 @@ pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
         &market_store,
         &mut oms,
         None,
-        &universe,
-        args.cash,
-        args.optimizer,
-        &signal_filter,
-        args.lookback_days,
-        args.min_order_value,
-        &args.metrics_file,
+        RebalanceConfig {
+            universe: &universe,
+            portfolio_cash: args.cash,
+            optimizer: args.optimizer,
+            signal_filter: &signal_filter,
+            lookback_days: args.lookback_days,
+            min_order_value: args.min_order_value,
+            metrics_file: &args.metrics_file,
+        },
     )?;
 
     Ok(())
@@ -216,13 +228,15 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
                 &market_store,
                 &mut oms,
                 broker.as_ref(),
-                &universe,
-                args.cash,
-                args.optimizer,
-                &signal_filter,
-                args.lookback_days,
-                args.min_order_value,
-                &args.metrics_file,
+                RebalanceConfig {
+                    universe: &universe,
+                    portfolio_cash: args.cash,
+                    optimizer: args.optimizer,
+                    signal_filter: &signal_filter,
+                    lookback_days: args.lookback_days,
+                    min_order_value: args.min_order_value,
+                    metrics_file: &args.metrics_file,
+                },
             ) {
                 Ok((submitted, rejected)) => {
                     info!("Cycle complete: submitted={submitted}  rejected={rejected}");
@@ -313,16 +327,11 @@ fn do_rebalance(
     market_store: &MarketDataStore,
     oms: &mut OrderManagementSystem,
     broker: Option<&AlpacaBrokerAdapter>,
-    universe: &[String],
-    portfolio_cash: f64,
-    optimizer: OptimizationMethod,
-    signal_filter: &SignalFilter,
-    lookback_days: usize,
-    min_order_value: f64,
-    metrics_file: &str,
+    config: RebalanceConfig<'_>,
 ) -> anyhow::Result<(usize, usize)> {
     // ── 1. Load return history ────────────────────────────────────────────
-    let (symbols_ordered, returns_matrix) = load_returns(market_store, universe, lookback_days)?;
+    let (symbols_ordered, returns_matrix) =
+        load_returns(market_store, config.universe, config.lookback_days)?;
     let n = symbols_ordered.len();
     if n == 0 {
         anyhow::bail!("No symbols with data found in the database.");
@@ -331,8 +340,12 @@ fn do_rebalance(
     info!("{} symbols loaded with {} bars", n, bars);
 
     // ── 2. Signal-driven alpha scores ─────────────────────────────────────
-    let alpha_scores =
-        generate_alpha_scores(market_store, &symbols_ordered, lookback_days, signal_filter)?;
+    let alpha_scores = generate_alpha_scores(
+        market_store,
+        &symbols_ordered,
+        config.lookback_days,
+        config.signal_filter,
+    )?;
 
     // ── 3. Covariance matrix ──────────────────────────────────────────────
     let cov = estimate_covariance(&returns_matrix, n, None)
@@ -346,7 +359,7 @@ fn do_rebalance(
         max_sector_weight: 1.0,
     };
     let opt_result = optimize(
-        optimizer,
+        config.optimizer,
         &symbols_ordered,
         &alpha_scores,
         &cov,
@@ -373,7 +386,7 @@ fn do_rebalance(
         .collect();
 
     let rebalancer = Rebalancer::default();
-    let rebalance = rebalancer.rebalance(&target_weights, &HashMap::new(), portfolio_cash);
+    let rebalance = rebalancer.rebalance(&target_weights, &HashMap::new(), config.portfolio_cash);
 
     if !rebalance.rebalance_triggered {
         println!("No rebalance needed (portfolio already on target).");
@@ -392,16 +405,16 @@ fn do_rebalance(
     let mut rejected = 0usize;
 
     for trade in &rebalance.trades {
-        if trade.dollar_amount < min_order_value {
+        if trade.dollar_amount < config.min_order_value {
             warn!(
                 "Skip {} {} — ${:.0} below minimum ${:.0}",
-                trade.side, trade.symbol, trade.dollar_amount, min_order_value
+                trade.side, trade.symbol, trade.dollar_amount, config.min_order_value
             );
             rejected += 1;
             continue;
         }
 
-        let fraction = trade.dollar_amount / portfolio_cash;
+        let fraction = trade.dollar_amount / config.portfolio_cash;
         if fraction > limits.max_position_fraction {
             warn!(
                 "Risk rejected {} {} — fraction {:.1}% > max {:.1}%",
@@ -457,7 +470,7 @@ fn do_rebalance(
 
     println!(
         "Done: portfolio=${:.0}  submitted={}  rejected={}  vol={:.2}%  turnover={:.2}%",
-        portfolio_cash,
+        config.portfolio_cash,
         submitted,
         rejected,
         opt_result.risk * 100.0,
@@ -465,10 +478,35 @@ fn do_rebalance(
     );
 
     // ── 7. Emit Prometheus metrics ────────────────────────────────────────
-    let pnl_cumulative = oms.portfolio_value() - portfolio_cash;
-    let daily_pnl_pct = pnl_cumulative / portfolio_cash.max(1.0);
-    if let Err(e) = write_paper_metrics(metrics_file, pnl_cumulative, daily_pnl_pct) {
-        warn!("failed to write paper metrics to {metrics_file}: {e}");
+    let pnl_cumulative = oms.portfolio_value() - config.portfolio_cash;
+    let daily_pnl_pct = pnl_cumulative / config.portfolio_cash.max(1.0);
+
+    let port_rets = compute_portfolio_returns(&returns_matrix, n, &opt_result.weights);
+    let sharpe_30d = rolling_sharpe(&port_rets, 30, 10);
+    let sharpe_7d = rolling_sharpe(&port_rets, 7, 3);
+    let pf = compute_profit_factor(&port_rets);
+    let gross_exposure_usd =
+        config.portfolio_cash * opt_result.weights.iter().cloned().sum::<f64>();
+    let pos_weights: Vec<(String, f64)> = symbols_ordered
+        .iter()
+        .zip(&opt_result.weights)
+        .map(|(s, &w)| (s.clone(), w))
+        .collect();
+
+    if let Err(e) = write_paper_metrics(
+        config.metrics_file,
+        pnl_cumulative,
+        daily_pnl_pct,
+        sharpe_30d,
+        sharpe_7d,
+        pf,
+        gross_exposure_usd,
+        &pos_weights,
+    ) {
+        warn!(
+            "failed to write paper metrics to {}: {e}",
+            config.metrics_file
+        );
     }
 
     Ok((submitted, rejected))
@@ -532,10 +570,29 @@ fn parse_schedule(s: &str) -> anyhow::Result<(u32, u32)> {
     Ok((h, m))
 }
 
-/// Write `quant_paper_pnl_cumulative` and `quant_paper_daily_pnl_pct` to a
-/// Prometheus text-format file so that `quant serve` can expose them.
-fn write_paper_metrics(path: &str, pnl_cumulative: f64, daily_pnl_pct: f64) -> anyhow::Result<()> {
+/// Write paper-trading Prometheus metrics to a text-format file.
+///
+/// Emits: pnl_cumulative, daily_pnl_pct, rolling Sharpe (30d + 7d),
+/// profit factor, gross exposure USD, and per-symbol position weights.
+#[allow(clippy::too_many_arguments)]
+fn write_paper_metrics(
+    path: &str,
+    pnl_cumulative: f64,
+    daily_pnl_pct: f64,
+    sharpe_30d: Option<f64>,
+    sharpe_7d: Option<f64>,
+    profit_factor: Option<f64>,
+    gross_exposure_usd: f64,
+    position_weights: &[(String, f64)],
+) -> anyhow::Result<()> {
     use std::io::Write as _;
+
+    // Use NaN for undefined metrics so Prometheus shows "N/A" rather than a
+    // misleading value (e.g. insufficient data for rolling window).
+    let sharpe_30d_val = sharpe_30d.unwrap_or(f64::NAN);
+    let sharpe_7d_val = sharpe_7d.unwrap_or(f64::NAN);
+    let profit_factor_val = profit_factor.unwrap_or(f64::NAN);
+
     let mut f = std::fs::File::create(path)?;
     write!(
         f,
@@ -544,8 +601,25 @@ fn write_paper_metrics(path: &str, pnl_cumulative: f64, daily_pnl_pct: f64) -> a
          quant_paper_pnl_cumulative {pnl_cumulative}\n\
          # HELP quant_paper_daily_pnl_pct Daily P&L as a fraction of starting notional\n\
          # TYPE quant_paper_daily_pnl_pct gauge\n\
-         quant_paper_daily_pnl_pct {daily_pnl_pct}\n"
+         quant_paper_daily_pnl_pct {daily_pnl_pct}\n\
+         # HELP quant_paper_sharpe_rolling_30d Rolling 30-day annualised Sharpe ratio on paper portfolio returns\n\
+         # TYPE quant_paper_sharpe_rolling_30d gauge\n\
+         quant_paper_sharpe_rolling_30d {sharpe_30d_val}\n\
+         # HELP quant_paper_sharpe_rolling_7d Rolling 7-day annualised Sharpe ratio on paper portfolio returns\n\
+         # TYPE quant_paper_sharpe_rolling_7d gauge\n\
+         quant_paper_sharpe_rolling_7d {sharpe_7d_val}\n\
+         # HELP quant_paper_profit_factor Gross winning return / abs(gross losing return) over historical window\n\
+         # TYPE quant_paper_profit_factor gauge\n\
+         quant_paper_profit_factor {profit_factor_val}\n\
+         # HELP quant_paper_gross_exposure_usd Total absolute notional of simulated portfolio in USD\n\
+         # TYPE quant_paper_gross_exposure_usd gauge\n\
+         quant_paper_gross_exposure_usd {gross_exposure_usd}\n\
+         # HELP quant_paper_position_weight Position weight as fraction of portfolio NAV per symbol\n\
+         # TYPE quant_paper_position_weight gauge\n"
     )?;
+    for (symbol, weight) in position_weights {
+        writeln!(f, "quant_paper_position_weight{{symbol=\"{symbol}\"}} {weight}")?;
+    }
     Ok(())
 }
 
@@ -788,6 +862,54 @@ fn parse_optimizer(s: &str) -> Result<OptimizationMethod, String> {
     }
 }
 
+// ── Metrics computation helpers ────────────────────────────────────────────────
+
+/// Compute per-bar portfolio returns: `weights · returns_row` for each bar.
+///
+/// `returns_matrix` is row-major with shape `[bars][n]`.
+fn compute_portfolio_returns(returns_matrix: &[f64], n: usize, weights: &[f64]) -> Vec<f64> {
+    if n == 0 || weights.len() != n {
+        return vec![];
+    }
+    let bars = returns_matrix.len() / n;
+    (0..bars)
+        .map(|t| (0..n).map(|i| weights[i] * returns_matrix[t * n + i]).sum())
+        .collect()
+}
+
+/// Rolling annualised Sharpe ratio from the tail of `returns`.
+///
+/// Uses the last `window` observations.  Returns `None` when fewer than
+/// `min_samples` data points are available or when the standard deviation is
+/// effectively zero.
+fn rolling_sharpe(returns: &[f64], window: usize, min_samples: usize) -> Option<f64> {
+    let slice = &returns[returns.len().saturating_sub(window)..];
+    if slice.len() < min_samples {
+        return None;
+    }
+    let n = slice.len() as f64;
+    let mean: f64 = slice.iter().sum::<f64>() / n;
+    let var: f64 =
+        slice.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
+    let std = var.sqrt();
+    if std < 1e-12 {
+        return None;
+    }
+    Some(mean / std * 252_f64.sqrt())
+}
+
+/// Profit factor = sum(positive returns) / sum(abs(negative returns)).
+///
+/// Returns `None` when there are no losing periods (avoids division by zero).
+fn compute_profit_factor(returns: &[f64]) -> Option<f64> {
+    let winning: f64 = returns.iter().filter(|&&r| r > 0.0).sum();
+    let losing: f64 = returns.iter().filter(|&&r| r < 0.0).map(|r| -r).sum();
+    if losing < 1e-12 {
+        return None;
+    }
+    Some(winning / losing)
+}
+
 // ── Unit tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -937,6 +1059,85 @@ mod tests {
             "alpha={}",
             decomp.combined_alpha
         );
+    }
+
+    // ── compute_portfolio_returns ─────────────────────────────────────────────
+
+    #[test]
+    fn test_portfolio_returns_equal_weight() {
+        // 2 symbols, 3 bars.  Equal weights (0.5 each).
+        let matrix = vec![
+            0.01, 0.02, // bar 0: sym0=+1%, sym1=+2%
+            -0.01, 0.0, // bar 1: sym0=-1%, sym1=0%
+            0.0, 0.03,  // bar 2: sym0=0%, sym1=+3%
+        ];
+        let weights = vec![0.5, 0.5];
+        let pr = compute_portfolio_returns(&matrix, 2, &weights);
+        assert_eq!(pr.len(), 3);
+        assert!((pr[0] - 0.015).abs() < 1e-12);
+        assert!((pr[1] - (-0.005)).abs() < 1e-12);
+        assert!((pr[2] - 0.015).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_portfolio_returns_empty_on_zero_n() {
+        assert!(compute_portfolio_returns(&[0.01], 0, &[]).is_empty());
+    }
+
+    // ── rolling_sharpe ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_rolling_sharpe_insufficient_data_returns_none() {
+        let rets = vec![0.01; 5];
+        assert!(rolling_sharpe(&rets, 30, 10).is_none());
+    }
+
+    #[test]
+    fn test_rolling_sharpe_constant_returns_returns_none() {
+        // Zero std dev → None.
+        let rets = vec![0.005; 30];
+        assert!(rolling_sharpe(&rets, 30, 10).is_none());
+    }
+
+    #[test]
+    fn test_rolling_sharpe_positive_drift() {
+        // Strong positive drift should produce a positive Sharpe.
+        let mut state: u64 = 99;
+        let rets: Vec<f64> = (0..60)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let noise = ((state >> 33) as f64) / (u32::MAX as f64) - 0.5;
+                0.005 + noise * 0.01 // strong positive drift
+            })
+            .collect();
+        let sharpe = rolling_sharpe(&rets, 30, 10).expect("should compute");
+        assert!(sharpe > 0.0, "sharpe={sharpe}");
+    }
+
+    // ── compute_profit_factor ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_profit_factor_no_losses_returns_none() {
+        let rets = vec![0.01, 0.02, 0.005];
+        assert!(compute_profit_factor(&rets).is_none());
+    }
+
+    #[test]
+    fn test_profit_factor_mixed_returns() {
+        // winning = 0.03 + 0.01 = 0.04, losing = 0.02
+        let rets = vec![0.03, -0.02, 0.01];
+        let pf = compute_profit_factor(&rets).expect("should compute");
+        assert!((pf - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_profit_factor_more_losses_than_wins() {
+        // pf < 1.0 → losing strategy
+        let rets = vec![0.01, -0.02, -0.03];
+        let pf = compute_profit_factor(&rets).expect("should compute");
+        assert!(pf < 1.0, "pf={pf}");
     }
 
     // ── Loop halt logic (circuit breaker) ────────────────────────────────────
