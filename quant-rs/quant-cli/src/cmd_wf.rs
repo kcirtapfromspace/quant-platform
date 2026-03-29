@@ -4,9 +4,9 @@
 //! (RSI/momentum + Bollinger Band/mean-reversion + MACD/trend-following),
 //! then runs an expanding walk-forward on real OHLCV data from DuckDB.
 //!
-//! # CRO gate spec (QUA-92)
+//! # CRO gate spec (CEO-approved)
 //! Default config: IS=90d, OOS=30d, step=30d, expanding=true, 64 folds.
-//! Gate thresholds: Sharpe ≥ 0.60, PF ≥ 1.26, MaxDD < 19.50%, WFE ≥ 0.80.
+//! Gate thresholds: Sharpe ≥ 0.60, PF ≥ 1.10, MaxDD < 20.00%, WFE ≥ 0.20.
 //!
 //! # No-lookahead guarantee
 //! Features (RSI, Bollinger Bands, MACD) are computed for the **full** price
@@ -25,12 +25,16 @@ use quant_data::MarketDataStore;
 use quant_features as qf;
 use quant_signals::{mean_reversion_signal, momentum_signal, trend_following_signal};
 
-// ── CRO gate thresholds ───────────────────────────────────────────────────────
+// ── CRO gate thresholds (CEO-approved recalibrated values) ───────────────────
+// Source: CEO gate decision referenced in QUA-49, QUA-58, QUA-85 gate reviews.
+// IMPORTANT: these are the *minimum* pass thresholds. Strategy-specific targets
+// (e.g. QUA-92 aspirational PF ≥ 1.26) are higher — a PASS here is necessary
+// but not sufficient for CRO sign-off on a specific strategy upgrade.
 
 const GATE_SHARPE: f64 = 0.60;
-const GATE_PF: f64 = 1.26;
-const GATE_MAXDD: f64 = 0.1950; // 19.50 %
-const GATE_WFE: f64 = 0.80;
+const GATE_PF: f64 = 1.10;
+const GATE_MAXDD: f64 = 0.2000; // 20.00 %
+const GATE_WFE: f64 = 0.20;
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
