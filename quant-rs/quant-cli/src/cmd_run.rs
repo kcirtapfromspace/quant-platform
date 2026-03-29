@@ -242,7 +242,7 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
     let signal_filter = SignalFilter::from_str(&args.signals);
     let (sched_h, sched_m) = parse_schedule(&args.schedule)?;
 
-    let market_store = MarketDataStore::open(&args.db)?;
+    let market_store = MarketDataStore::open_read_only(&args.db)?;
     let oms_store = SqliteStateStore::new(&args.oms_db)?;
     let mut oms = OrderManagementSystem::new(Some(oms_store));
     oms.restore_state()?;

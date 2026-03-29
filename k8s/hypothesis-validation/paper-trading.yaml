@@ -115,12 +115,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: alpaca-credentials
-                  key: ALPACA_API_KEY
+                  key: api_key
             - name: ALPACA_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: alpaca-credentials
-                  key: ALPACA_SECRET_KEY
+                  key: secret_key
             - name: ALPACA_PAPER
               value: "true"
           volumeMounts:

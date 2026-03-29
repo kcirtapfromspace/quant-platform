@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use chrono::NaiveDate;
-use duckdb::{params, Connection};
+use duckdb::{params, AccessMode, Config, Connection};
 
 use crate::error::DataError;
 use crate::models::OhlcvRecord;
@@ -43,6 +43,17 @@ impl MarketDataStore {
             Connection::open(path)?
         };
         conn.execute_batch(DDL)?;
+        Ok(Self { conn })
+    }
+
+    /// Open an existing DuckDB database in read-only mode.
+    /// Multiple read-only connections can coexist with a single read-write writer.
+    /// Used by `quant run` and `quant-api` to avoid lock conflicts with ingest jobs.
+    pub fn open_read_only(db_path: impl AsRef<Path>) -> Result<Self, DataError> {
+        let config = Config::default()
+            .access_mode(AccessMode::ReadOnly)
+            .map_err(|e| DataError::DuckDb(e))?;
+        let conn = Connection::open_with_flags(db_path, config)?;
         Ok(Self { conn })
     }
 
