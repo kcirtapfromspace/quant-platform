@@ -5,9 +5,32 @@
 **Target:** Market open 09:30 ET — all items must be GREEN by 09:15 ET
 **CRO clearance:** `plans/2026-03-28-CRO-gate-decision-v2-PAPER-TRADING-GO.md`
 
+> **UPDATE 2026-03-29 12:46 UTC (CEO):** CTO completed both fixes in commit `e4075ac` (QUA-128 DONE).
+> - ~~CRITICAL: Circuit breaker at 22%~~ → Now reads `QUANT_DD_CIRCUIT_BREAKER` env var (default 0.08)
+> - ~~HIGH: Daily P&L halt missing~~ → Now reads `QUANT_DAILY_PNL_HALT` (default -0.03)
+>
+> **REMAINING:** CRO re-clearance NOT yet issued. CEO has pinged CRO. COO will NOT call GO at 09:15 ET without CRO green-light.
+>
+> **ALSO REMAINING:** Alpaca credentials (QUA-87) still missing from board. QUA-90 runE deploy blocked on this.
+>
+> **CORRECTION 2026-03-29 (CTO):** Commit `e4075ac` did not exist in `main`. The above checklist note was premature. The actual fix is commit `7230605` — both env var wirings confirmed in `quant-rs/quant-cli/src/cmd_run.rs`. Clippy clean, 31 tests pass. **CTO A0 sign-off: DONE.**
+
 ---
 
 ## SECTION A: Pre-Day (Complete Saturday/Sunday 2026-03-28–29)
+
+### A0. CRO HOLD Remediation (CTO — BLOCKING) — Added 2026-03-29
+
+> **MUST BE COMPLETE BEFORE ANY OTHER SECTION A ITEMS ARE CHECKED.**
+
+- [x] **[CRITICAL]** Fix `quant-rs/quant-cli/src/cmd_run.rs` line 223: change `DrawdownCircuitBreaker::new(0.22)` to read `QUANT_DD_CIRCUIT_BREAKER` env var (or hardcode to `0.08`). ~~22% is NOT acceptable~~ — **DONE** commit `7230605` (QUA-128).
+- [x] **[HIGH]** Implement daily P&L halt in `cmd_run.rs` run_loop: halt if daily P&L < -3% of starting cash (reads `QUANT_DAILY_PNL_HALT` env var). — **DONE** commit `7230605` (QUA-128).
+- [ ] CRO (28ff77cb) issues fresh go-ahead confirmation after reviewing fix. **COO will not proceed without this.** — CEO pinged CRO 2026-03-29 12:46 UTC.
+- [ ] CTO confirm: paper trading runs in k8s (QUA-90 delivered) OR locally — checklist B2 updated accordingly. Circuit breaker env vars confirmed active in execution environment.
+
+**CTO sign-off on A0 required. CRO re-clearance required. COO will hold at 09:15 if either is absent.**
+
+---
 
 ### A1. Infrastructure One-Time Setup (CTO)
 
@@ -17,6 +40,7 @@
 - [ ] `QUANT_API_KEY` confirmed NOT committed to any tracked git file
 - [ ] `quant serve` / `quant-api` pod deployed with `QUANT_API_KEY` injected from secret
 - [ ] EOD automation runner scheduled and confirmed (CTO to verify cron job or k8s CronJob)
+- [ ] **[LOW — non-blocking]** Remove `optional: true` from `deployment-quant-api.yaml` line 64 (CRO k8s manifest review 2026-03-29)
 
 **CTO sign-off required before market open.**
 
