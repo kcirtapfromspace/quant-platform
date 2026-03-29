@@ -39,9 +39,8 @@ spec:
         - name: market-data
           persistentVolumeClaim:
             claimName: market-data
-        - name: backtest-results
-          persistentVolumeClaim:
-            claimName: backtest-results
+        # backtest-results RWX volume temporarily removed — Longhorn NFS share manager stuck
+        # on talos-ssm-o4m (engine stopped, reattach pending). Re-add once Longhorn stabilizes.
       containers:
         - name: quant-api
           image: ghcr.io/kcirtapfromspace/quant-api:latest
@@ -67,9 +66,7 @@ spec:
             - name: market-data
               mountPath: /data
               readOnly: true
-            - name: backtest-results
-              mountPath: /backtest
-              readOnly: true
+            # backtest-results mount temporarily removed (see volumes comment above)
           ports:
             - name: http
               containerPort: 8080
