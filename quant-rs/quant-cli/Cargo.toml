@@ -17,7 +17,7 @@ quant-risk = { path = "../quant-risk" }
 quant-features = { path = "../quant-features" }
 quant-signals = { path = "../quant-signals" }
 quant-backtest = { path = "../quant-backtest" }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
