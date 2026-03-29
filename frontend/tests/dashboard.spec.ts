@@ -391,11 +391,14 @@ test('live trading updates quotes over websocket without a refresh', async ({ pa
 test('portfolio dashboard renders equity and positions data', async ({ page }) => {
   await gotoDashboard(page);
   await openSidebarView(page, 'Portfolio');
+  const positionsTable = page
+    .getByRole('table')
+    .filter({ has: page.getByRole('columnheader', { name: 'Symbol' }) });
 
   await expect(page.getByText('Equity Curve (Daily NAV)')).toBeVisible();
   await expect(page.getByText('Exposure by Symbol')).toBeVisible();
-  await expect(page.locator('table')).toContainText('AAPL');
-  await expect(page.locator('table')).toContainText('NVDA');
+  await expect(positionsTable).toContainText('AAPL');
+  await expect(positionsTable).toContainText('NVDA');
 });
 
 test('market data page loads charts and the symbol selector switches context', async ({ page }) => {
