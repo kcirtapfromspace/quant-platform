@@ -54,8 +54,6 @@ spec:
             - "8080"
             - --db
             - /data/quant.duckdb
-            - --oms-db
-            - /data/quant_oms.db
           env:
             - name: QUANT_API_KEY
               valueFrom:
@@ -92,61 +90,58 @@ spec:
             periodSeconds: 10
 
         # ── Rust runE paper-trading daemon (QUA-90) ─────────────────────────
-        # STATUS: READY TO ACTIVATE — blocked on QUA-87 (Alpaca credentials).
-        # To enable: (1) apply alpaca-secret-template.yaml with real creds,
-        #            (2) uncomment the container block below,
-        #            (3) `kubectl apply -f paper-trading.yaml` or push to trigger Argo CD sync.
-        #
-        # Circuit breaker env vars are pre-wired (QUA-128 remediation, commit 7230605):
-        #   QUANT_DD_CIRCUIT_BREAKER=0.08   → 8% MaxDD hard stop (CRO-approved)
-        #   QUANT_DAILY_PNL_HALT=-0.03      → -3% daily P&L halt (CRO-approved)
-        #
-        # - name: run-e
-        #   image: ghcr.io/kcirtapfromspace/quant-rs:latest
-        #   imagePullPolicy: Always
-        #   command:
-        #     - /usr/local/bin/quant
-        #     - run
-        #     - loop
-        #     - --db
-        #     - /data/quant.duckdb
-        #     - --oms-db
-        #     - /app/data/quant_oms.db
-        #     - --cash
-        #     - "100000"
-        #     - --schedule
-        #     - "16:05"
-        #   env:
-        #     - name: QUANT_DD_CIRCUIT_BREAKER
-        #       value: "0.08"
-        #     - name: QUANT_DAILY_PNL_HALT
-        #       value: "-0.03"
-        #     - name: ALPACA_API_KEY
-        #       valueFrom:
-        #         secretKeyRef:
-        #           name: alpaca-credentials
-        #           key: ALPACA_API_KEY
-        #     - name: ALPACA_SECRET_KEY
-        #       valueFrom:
-        #         secretKeyRef:
-        #           name: alpaca-credentials
-        #           key: ALPACA_SECRET_KEY
-        #     - name: ALPACA_PAPER
-        #       value: "true"
-        #     - name: ALPACA_BASE_URL
-        #       value: "https://paper-api.alpaca.markets"
-        #   volumeMounts:
-        #     - name: market-data
-        #       mountPath: /data
-        #     - name: run-e-state
-        #       mountPath: /app/data
-        #   resources:
-        #     requests:
-        #       cpu: "200m"
-        #       memory: "256Mi"
-        #     limits:
-        #       cpu: "1000m"
-        #       memory: "512Mi"
+        # Daily rebalance daemon: runs `quant run loop` at 16:05 ET.
+        # $100K notional (CEO option-A directive, 2026-03-29).
+        # OMS + state written to market-data PVC so quant-api can read them.
+        # Circuit breaker env vars explicit for CRO audit compliance (QUA-128):
+        #   QUANT_DD_CIRCUIT_BREAKER=0.08  → 8% MaxDD hard stop
+        #   QUANT_DAILY_PNL_HALT=-0.03     → -3% daily P&L halt
+        - name: run-e
+          image: ghcr.io/kcirtapfromspace/quant-rs:latest
+          imagePullPolicy: Always
+          command:
+            - /usr/local/bin/quant
+            - run
+            - loop
+            - --db
+            - /data/quant.duckdb
+            - --oms-db
+            - /data/quant_oms.db
+            - --cash
+            - "100000"
+            - --schedule
+            - "16:05"
+            - --state-file
+            - /data/run_e_state.json
+          env:
+            - name: QUANT_DD_CIRCUIT_BREAKER
+              value: "0.08"
+            - name: QUANT_DAILY_PNL_HALT
+              value: "-0.03"
+            - name: ALPACA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: alpaca-credentials
+                  key: api_key
+            - name: ALPACA_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: alpaca-credentials
+                  key: secret_key
+            - name: ALPACA_PAPER
+              value: "true"
+          volumeMounts:
+            - name: market-data
+              mountPath: /data
+            - name: run-e-state
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
 
 ---
 apiVersion: v1

@@ -73,6 +73,18 @@ pub struct RunOnceArgs {
     /// Skipped when not set.
     #[arg(long)]
     pub state_file: Option<String>,
+
+    /// Drawdown circuit-breaker threshold (fraction of starting cash).
+    /// Trading halts if portfolio drawdown exceeds this level.
+    /// CRO-approved level: 0.08 (8%). Reads QUANT_DD_CIRCUIT_BREAKER env var.
+    #[arg(long, env = "QUANT_DD_CIRCUIT_BREAKER", default_value = "0.08")]
+    pub dd_circuit_breaker: f64,
+
+    /// Daily P&L halt threshold (negative fraction of starting cash).
+    /// Trading halts if daily P&L falls below this fraction.
+    /// CRO-approved level: -0.03 (-3%). Reads QUANT_DAILY_PNL_HALT env var.
+    #[arg(long, env = "QUANT_DAILY_PNL_HALT", default_value = "-0.03")]
+    pub daily_pnl_halt: f64,
 }
 
 #[derive(Args)]
@@ -170,6 +182,30 @@ impl SignalFilter {
 pub fn run_once(args: RunOnceArgs) -> anyhow::Result<()> {
     let universe = resolve_symbols(args.symbols.as_deref());
     let signal_filter = SignalFilter::from_str(&args.signals);
+
+    // ── 0. Circuit-breaker + daily P&L halt (CRO gates, QUA-128) ─────────
+    {
+        let (prev_pnl_cumulative, prev_daily_pnl_pct) = read_paper_metrics(&args.metrics_file);
+        let current_value = args.cash + prev_pnl_cumulative;
+        let cb = DrawdownCircuitBreaker::new(args.dd_circuit_breaker);
+        if cb.is_tripped(args.cash, current_value) {
+            let dd_pct = (args.cash - current_value) / args.cash * 100.0;
+            anyhow::bail!(
+                "CIRCUIT BREAKER TRIPPED: portfolio drawdown {:.2}% exceeds CRO threshold {:.2}%. \
+                 Trading halted. Manual reset required.",
+                dd_pct,
+                args.dd_circuit_breaker * 100.0,
+            );
+        }
+        if prev_daily_pnl_pct < args.daily_pnl_halt {
+            anyhow::bail!(
+                "DAILY P&L HALT: daily P&L {:.2}% breaches CRO floor {:.2}%. \
+                 Trading halted for remainder of session.",
+                prev_daily_pnl_pct * 100.0,
+                args.daily_pnl_halt * 100.0,
+            );
+        }
+    }
 
     let market_store = MarketDataStore::open(&args.db)?;
     let mut oms = OrderManagementSystem::new_in_memory()?;
@@ -799,6 +835,29 @@ fn write_run_e_state(
     let mut f = std::fs::File::create(path)?;
     write!(f, "{}", serde_json::to_string_pretty(&state)?)?;
     Ok(())
+}
+
+/// Read `quant_paper_pnl_cumulative` and `quant_paper_daily_pnl_pct` from a
+/// Prometheus text-format metrics file.  Returns (0.0, 0.0) if the file is
+/// absent or unparseable — safe to call before the first cycle.
+fn read_paper_metrics(path: &str) -> (f64, f64) {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return (0.0, 0.0);
+    };
+    let mut pnl_cumulative = 0.0_f64;
+    let mut daily_pnl_pct = 0.0_f64;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("quant_paper_pnl_cumulative ") {
+            if let Ok(v) = rest.parse() {
+                pnl_cumulative = v;
+            }
+        } else if let Some(rest) = line.strip_prefix("quant_paper_daily_pnl_pct ") {
+            if let Ok(v) = rest.parse() {
+                daily_pnl_pct = v;
+            }
+        }
+    }
+    (pnl_cumulative, daily_pnl_pct)
 }
 
 // ── Returns loading ────────────────────────────────────────────────────────────
