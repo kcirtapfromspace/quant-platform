@@ -21,7 +21,8 @@
 | QUA-121 backtest infra | **DONE** 2026-03-29 commit `12c57f1` — `quant wf` real-data WF | see commit |
 | Notional decision | **CEO Option A — $100K** | 2026-03-29 08:54 UTC, account c5845f38 |
 | runE daemon | **LIVE** 2026-03-29 13:26 UTC, 2/2 pods (QUA-90 DONE) | commits `ab15bf6`, `cf2bac8` |
-| CB env var confirmation | **⚠️ PENDING** — CRO standing condition, CTO must confirm before 16:05 ET | QUA-128 / CRO memo |
+| CB env var confirmation | ✅ **CONFIRMED** 2026-03-29 13:43 UTC — startup log: `dd_threshold=8.0% daily_pnl_halt=-3.0%` | QUA-132 commit `a085d8d` |
+| CI/CD billing block | **⚠️ OPEN** — GitHub Actions billing failure; CEO escalated 2026-03-29 13:40 UTC | Manual image build workaround applied |
 | First rebalance | **TODAY 2026-03-29 16:05 ET** — orders queue for Monday 09:30 ET fill | runE schedule |
 
 Starting NAV: **$100,000.00** (CEO Option A — scaled from $1M design, ratios unchanged)

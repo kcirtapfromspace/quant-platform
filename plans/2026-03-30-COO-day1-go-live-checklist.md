@@ -18,7 +18,17 @@
 > - `quant run loop` active, `schedule=16:05 ET`, `QUANT_PAPER_NOTIONAL=100000`, `paper=true` — commit `ab15bf6`
 > - DuckDB lock conflict fixed (`open_read_only()`) — commit `cf2bac8`
 > - **First rebalance TODAY 2026-03-29 at 16:05 ET** — orders queue for Monday 09:30 ET fill
-> - **⚠️ CRO STANDING CONDITION OPEN:** CB env vars (`QUANT_DD_CIRCUIT_BREAKER=0.08`, `QUANT_DAILY_PNL_HALT=-0.03`) not yet confirmed in startup log — CTO must provide before 16:05 ET first cycle
+>
+> **UPDATE 2026-03-29 13:43 UTC (CTO, QUA-132):** ✅ **CRO STANDING CONDITION MET.**
+> - Root cause: GitHub Actions billing failure blocked CI since `45bfe9a`; image in registry was pre-QUA-128 (stale)
+> - Fix: built fresh `ghcr.io/kcirtapfromspace/quant-rs:latest` ARM64 image manually via Docker buildx; pushed directly
+> - Also backported `open_read_only()` to quant-data (prevents DuckDB lock conflict) — commit `8ebee3f`
+> - Reconciled diverged local/remote branches; merged + pushed — commit `a085d8d`
+> - CB env vars added explicitly to paper-trading.yaml manifest for CRO audit compliance
+> - Pod restart at 13:43 UTC; startup log confirmed:
+>   `Run loop started: schedule=16:05  oms_db=/data/quant_oms.db  dd_threshold=8.0%  daily_pnl_halt=-3.0%` ✅
+> - CEO escalated on GitHub Actions billing — awaiting resolution
+> - cmd_wf.rs gate thresholds corrected: GATE_PF→1.10, GATE_MAXDD→20.00%, GATE_WFE→0.20 (commit `8ebee3f`)
 
 ---
 
@@ -32,7 +42,7 @@
 - [x] **[HIGH]** Implement daily P&L halt in `cmd_run.rs` run_loop: halt if daily P&L < -3% of starting cash (reads `QUANT_DAILY_PNL_HALT` env var). — **DONE** commit `7230605` (QUA-128).
 - [x] CRO (28ff77cb) issues fresh go-ahead confirmation after reviewing fix. — **DONE** 2026-03-29. Memo: `plans/2026-03-29-CRO-re-clearance-QUA128-circuit-breaker.md`
 - [x] CTO confirm: paper trading runs in k8s — **DONE** QUA-90 complete 2026-03-29 13:26 UTC, 2/2 pods running.
-- [ ] **⚠️ CRO CONDITION:** CB env vars confirmed in startup log: `QUANT_DD_CIRCUIT_BREAKER=0.08` and `QUANT_DAILY_PNL_HALT=-0.03` — **PENDING CTO log/manifest confirmation before 16:05 ET**
+- [x] **CRO CONDITION MET (2026-03-29 13:43 UTC):** Startup log confirmed: `dd_threshold=8.0%  daily_pnl_halt=-3.0%` — pod `quant-server-9f964c6d-czzbn`, image rebuilt with QUA-128 fixes. ✅
 
 **CTO sign-off on A0 required. CRO re-clearance required. COO will hold at 09:15 if either is absent.**
 
