@@ -1,4 +1,6 @@
-# Tailscale Ingress: exposes quant-server on the tailnet as quant.tail16ecc2.ts.net
+# Tailscale Ingress: exposes quant-frontend on the tailnet as quant.tail16ecc2.ts.net
+# QUA-109: updated from quant-server (bare health page) to quant-frontend (full dashboard)
+# nginx inside quant-frontend proxies /api/ and /ws to quant-api service.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -10,7 +12,7 @@ spec:
   ingressClassName: tailscale
   defaultBackend:
     service:
-      name: quant-server
+      name: quant-frontend
       port:
         number: 80
   tls:

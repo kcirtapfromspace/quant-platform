@@ -7,6 +7,8 @@ resources:
   - configmap.yaml
   - parameter-sweep-cronjob.yaml
   - paper-trading.yaml
+  - deployment-quant-api.yaml
+  - deployment-quant-frontend.yaml
   - tailscale-ingress.yaml
   # backtest-job-template.yaml is not listed here — it is instantiated
   # dynamically by k8s_hypothesis_sweep.py, not applied directly.
