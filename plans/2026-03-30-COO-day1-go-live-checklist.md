@@ -36,11 +36,11 @@
 
 - [ ] DuckDB migration executed: `duckdb data/paper_trading.duckdb < migrations/001_paper_trading_schema.sql`
 - [ ] Verify three tables exist: `daily_nav`, `daily_recon_log`, `daily_sleeve_pnl`
-- [ ] `quant-api-credentials` k8s secret created (see QUA-95 deployment requirements section 5a)
-- [ ] `QUANT_API_KEY` confirmed NOT committed to any tracked git file
-- [ ] `quant serve` / `quant-api` pod deployed with `QUANT_API_KEY` injected from secret
+- [ ] `quant-api-credentials` k8s secret created (see QUA-95 deployment requirements section 5a) — **BLOCKED on Alpaca credentials (QUA-87)**
+- [x] `QUANT_API_KEY` confirmed NOT committed to any tracked git file — injected from `quant-api-secret` k8s secret (verified 2026-03-29)
+- [ ] `quant serve` / `quant-api` pod deployed with `QUANT_API_KEY` injected from secret — **BLOCKED on Alpaca credentials (QUA-87)**
 - [ ] EOD automation runner scheduled and confirmed (CTO to verify cron job or k8s CronJob)
-- [ ] **[LOW — non-blocking]** Remove `optional: true` from `deployment-quant-api.yaml` line 64 (CRO k8s manifest review 2026-03-29)
+- [x] **[LOW — non-blocking]** Remove `optional: true` from `deployment-quant-api.yaml` line 64 — **DONE** commit `d156eab` (2026-03-29)
 
 **CTO sign-off required before market open.**
 
