@@ -19,6 +19,7 @@ quant-signals = { path = "../quant-signals" }
 quant-backtest = { path = "../quant-backtest" }
 clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serde = { version = "1", features = ["derive"] }

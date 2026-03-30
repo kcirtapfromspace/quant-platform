@@ -17,7 +17,8 @@
 
 use std::collections::HashMap;
 
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use chrono_tz::Tz;
 use clap::Args;
 use tracing::{info, warn};
 
@@ -97,7 +98,8 @@ pub struct RunLoopArgs {
     #[arg(long, default_value = "./quant_oms.db")]
     pub oms_db: String,
 
-    /// Daily rebalance time in HH:MM (24-hour local time, e.g. 16:05).
+    /// Daily rebalance time in HH:MM in the schedule timezone
+    /// (`QUANT_SCHEDULE_TZ`, defaults to America/New_York).
     #[arg(long, default_value = "16:05")]
     pub schedule: String,
 
@@ -243,6 +245,7 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
     let universe = resolve_symbols(args.symbols.as_deref());
     let signal_filter = SignalFilter::from_str(&args.signals);
     let (sched_h, sched_m) = parse_schedule(&args.schedule)?;
+    let schedule_tz = schedule_timezone()?;
 
     let market_store = MarketDataStore::open_read_only(&args.db)?;
     let oms_store = SqliteStateStore::new(&args.oms_db)?;
@@ -272,21 +275,26 @@ pub fn run_loop(args: RunLoopArgs) -> anyhow::Result<()> {
     let mut last_run_date: Option<NaiveDate> = oms.last_order_date();
 
     info!(
-        "Run loop started: schedule={}:{:02}  oms_db={}  dd_threshold={:.1}%  daily_pnl_halt={:.1}%",
+        "Run loop started: schedule={}:{:02} {}  oms_db={}  dd_threshold={:.1}%  daily_pnl_halt={:.1}%",
         sched_h,
         sched_m,
+        schedule_tz.name(),
         args.oms_db,
         dd_threshold * 100.0,
         daily_pnl_halt * 100.0,
     );
 
     loop {
-        let now = chrono::Local::now();
-        let today = now.date_naive();
-        let sched_time = chrono::NaiveTime::from_hms_opt(sched_h, sched_m, 0).unwrap();
+        let now = Utc::now();
+        let today = schedule_date(now, schedule_tz);
 
-        if last_run_date != Some(today) && now.time() >= sched_time {
-            info!("Running daily rebalance cycle for {today}");
+        if should_run_rebalance(now, last_run_date, sched_h, sched_m, schedule_tz) {
+            let now_in_tz = now.with_timezone(&schedule_tz);
+            info!(
+                "Running daily rebalance cycle for {today} at {} ({})",
+                now.to_rfc3339(),
+                now_in_tz.to_rfc3339(),
+            );
 
             // Snapshot portfolio value at start of this day's cycle for P&L halt check.
             let day_start_value = portfolio_value_for_maxdd(broker.as_ref(), &oms, args.cash);
@@ -435,12 +443,17 @@ fn do_rebalance(
     info!("{} symbols loaded with {} bars", n, bars);
 
     // ── 2. Signal-driven alpha scores ─────────────────────────────────────
-    let (alpha_scores, decomps) = generate_alpha_scores(
+    let (alpha_scores, decomps, latest_prices) = generate_alpha_scores(
         market_store,
         &symbols_ordered,
         config.lookback_days,
         config.signal_filter,
     )?;
+    let latest_price_by_symbol: HashMap<String, f64> = symbols_ordered
+        .iter()
+        .cloned()
+        .zip(latest_prices.into_iter())
+        .collect();
 
     // ── 3. Covariance matrix ──────────────────────────────────────────────
     let cov = estimate_covariance(&returns_matrix, n, None)
@@ -522,7 +535,30 @@ fn do_rebalance(
             continue;
         }
 
-        // Use dollar_amount as quantity (notional units at price 1.0).
+        let latest_price = match latest_price_by_symbol.get(&trade.symbol) {
+            Some(price) => *price,
+            None => {
+                warn!(
+                    "Price lookup rejected {} {} — missing latest price",
+                    trade.side, trade.symbol
+                );
+                rejected += 1;
+                continue;
+            }
+        };
+        let quantity = match order_quantity_from_notional(trade.dollar_amount, latest_price) {
+            Some(qty) => qty,
+            None => {
+                warn!(
+                    "Price lookup rejected {} {} — invalid latest price {:.6}",
+                    trade.side, trade.symbol, latest_price
+                );
+                rejected += 1;
+                continue;
+            }
+        };
+
+        // Convert dollar notional into broker share quantity.
         let order = Order::new(
             trade.symbol.clone(),
             if trade.side == "BUY" {
@@ -530,7 +566,7 @@ fn do_rebalance(
             } else {
                 OrderSide::Sell
             },
-            trade.dollar_amount,
+            quantity,
             OrderType::Market,
         );
 
@@ -633,6 +669,31 @@ fn try_build_alpaca_broker() -> Option<AlpacaBrokerAdapter> {
             None
         }
     }
+}
+
+fn schedule_timezone() -> anyhow::Result<Tz> {
+    let tz_name =
+        std::env::var("QUANT_SCHEDULE_TZ").unwrap_or_else(|_| "America/New_York".to_string());
+    tz_name
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid QUANT_SCHEDULE_TZ '{}'", tz_name))
+}
+
+fn schedule_date(now: DateTime<Utc>, schedule_tz: Tz) -> NaiveDate {
+    now.with_timezone(&schedule_tz).date_naive()
+}
+
+fn should_run_rebalance(
+    now: DateTime<Utc>,
+    last_run_date: Option<NaiveDate>,
+    sched_h: u32,
+    sched_m: u32,
+    schedule_tz: Tz,
+) -> bool {
+    let today = schedule_date(now, schedule_tz);
+    let sched_time = NaiveTime::from_hms_opt(sched_h, sched_m, 0).unwrap();
+    let local_now = now.with_timezone(&schedule_tz);
+    last_run_date != Some(today) && local_now.time() >= sched_time
 }
 
 /// Best-effort portfolio equity for MaxDD tracking.
@@ -1040,22 +1101,26 @@ fn compute_symbol_alpha(adj_close: &[f64], filter: &SignalFilter) -> Option<Sign
 /// Compute alpha scores for each symbol using the filtered signal pipeline.
 ///
 /// Returns both the combined alpha vector (used by the optimizer) and the
-/// per-symbol `SignalDecomposition` slice (used by `write_run_e_state`).
+/// per-symbol `SignalDecomposition` slice (used by `write_run_e_state`) plus
+/// each symbol's latest `adj_close` (used to convert dollar notional to shares).
 fn generate_alpha_scores(
     store: &MarketDataStore,
     symbols: &[String],
     lookback_days: usize,
     filter: &SignalFilter,
-) -> anyhow::Result<(Vec<f64>, Vec<SignalDecomposition>)> {
+) -> anyhow::Result<(Vec<f64>, Vec<SignalDecomposition>, Vec<f64>)> {
     let today = chrono::Local::now().date_naive();
     let start = today - chrono::Duration::days((lookback_days as i64) * 2);
 
     let mut alpha_scores = Vec::with_capacity(symbols.len());
     let mut decomps = Vec::with_capacity(symbols.len());
+    let mut latest_prices = Vec::with_capacity(symbols.len());
 
     for sym in symbols {
         let records = store.query(sym, start, today)?;
+        let latest_adj_close = records.last().map(|r| r.adj_close).unwrap_or(0.0);
         let adj_close: Vec<f64> = records.iter().map(|r| r.adj_close).collect();
+        latest_prices.push(latest_adj_close);
 
         match compute_symbol_alpha(&adj_close, filter) {
             Some(decomp) => {
@@ -1090,7 +1155,19 @@ fn generate_alpha_scores(
         }
     }
 
-    Ok((alpha_scores, decomps))
+    Ok((alpha_scores, decomps, latest_prices))
+}
+
+fn order_quantity_from_notional(dollar_amount: f64, latest_price: f64) -> Option<f64> {
+    if !latest_price.is_finite() || latest_price <= 0.0 {
+        return None;
+    }
+    let qty = dollar_amount / latest_price;
+    if qty.is_finite() && qty > 0.0 {
+        Some(qty)
+    } else {
+        None
+    }
 }
 
 fn resolve_symbols(arg: Option<&str>) -> Vec<String> {
@@ -1168,6 +1245,7 @@ fn compute_profit_factor(returns: &[f64]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use quant_risk::DrawdownCircuitBreaker;
 
     /// Synthetic price series with deterministic drift + noise.
@@ -1445,6 +1523,49 @@ mod tests {
     #[test]
     fn test_parse_schedule_missing_colon() {
         assert!(parse_schedule("1605").is_err());
+    }
+
+    #[test]
+    fn test_schedule_timezone_defaults_to_new_york() {
+        std::env::remove_var("QUANT_SCHEDULE_TZ");
+        let tz = schedule_timezone().unwrap();
+        assert_eq!(tz, chrono_tz::America::New_York);
+    }
+
+    #[test]
+    fn test_should_run_rebalance_uses_market_timezone_not_utc() {
+        let tz = chrono_tz::America::New_York;
+
+        let before_et_close = Utc.with_ymd_and_hms(2026, 3, 30, 16, 5, 0).unwrap();
+        assert!(!should_run_rebalance(before_et_close, None, 16, 5, tz));
+
+        let at_et_close = Utc.with_ymd_and_hms(2026, 3, 30, 20, 5, 0).unwrap();
+        assert!(should_run_rebalance(at_et_close, None, 16, 5, tz));
+        assert_eq!(
+            schedule_date(at_et_close, tz),
+            NaiveDate::from_ymd_opt(2026, 3, 30).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_should_run_rebalance_respects_last_run_date_in_schedule_timezone() {
+        let tz = chrono_tz::America::New_York;
+        let at_et_close = Utc.with_ymd_and_hms(2026, 3, 30, 20, 5, 0).unwrap();
+        let today = schedule_date(at_et_close, tz);
+        assert!(!should_run_rebalance(at_et_close, Some(today), 16, 5, tz));
+    }
+
+    #[test]
+    fn test_order_quantity_from_notional_converts_to_shares() {
+        let qty = order_quantity_from_notional(6_684.4, 112.0).unwrap();
+        assert!((qty - 59.6821428571).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_order_quantity_from_notional_rejects_invalid_price() {
+        assert!(order_quantity_from_notional(100.0, 0.0).is_none());
+        assert!(order_quantity_from_notional(100.0, -1.0).is_none());
+        assert!(order_quantity_from_notional(100.0, f64::NAN).is_none());
     }
 
     // ── resolve_symbols / parse_optimizer ────────────────────────────────────

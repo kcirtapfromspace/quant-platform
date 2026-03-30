@@ -11,7 +11,7 @@
 //! Pass `paper: true` to route requests to `https://paper-api.alpaca.markets`
 //! instead of the live endpoint.
 
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, HeaderValue, InvalidHeaderValue};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -141,16 +141,13 @@ impl Broker for AlpacaBrokerAdapter {
 
         debug!(symbol = %order.symbol, qty = %req.qty, side = order.side.as_str(), "submitting order to Alpaca");
 
-        let resp = self.client.post(self.url("/v2/orders")).json(&req).send()?;
-
-        check_status(&resp)?;
+        let resp = check_status(self.client.post(self.url("/v2/orders")).json(&req).send()?)?;
         let body: AlpacaOrderResponse = resp.json()?;
         Ok(body.id)
     }
 
     fn get_account(&self) -> Result<AccountInfo, BrokerError> {
-        let resp = self.client.get(self.url("/v2/account")).send()?;
-        check_status(&resp)?;
+        let resp = check_status(self.client.get(self.url("/v2/account")).send()?)?;
 
         let body: AlpacaAccountResponse = resp.json()?;
         Ok(AccountInfo {
@@ -165,8 +162,7 @@ impl Broker for AlpacaBrokerAdapter {
     }
 
     fn get_positions(&self) -> Result<Vec<BrokerPosition>, BrokerError> {
-        let resp = self.client.get(self.url("/v2/positions")).send()?;
-        check_status(&resp)?;
+        let resp = check_status(self.client.get(self.url("/v2/positions")).send()?)?;
 
         let body: Vec<AlpacaPositionResponse> = resp.json()?;
         Ok(body
@@ -183,11 +179,11 @@ impl Broker for AlpacaBrokerAdapter {
 
     fn cancel_order(&self, broker_order_id: &str) -> Result<(), BrokerError> {
         debug!(broker_order_id, "cancelling Alpaca order");
-        let resp = self
-            .client
-            .delete(self.url(&format!("/v2/orders/{broker_order_id}")))
-            .send()?;
-        check_status(&resp)?;
+        check_status(
+            self.client
+                .delete(self.url(&format!("/v2/orders/{broker_order_id}")))
+                .send()?,
+        )?;
         Ok(())
     }
 }
@@ -211,18 +207,33 @@ fn parse_f64(s: &str) -> f64 {
 }
 
 /// Consume the response status, returning `BrokerError::Api` on non-2xx.
-fn check_status(resp: &reqwest::blocking::Response) -> Result<(), BrokerError> {
+fn check_status(resp: Response) -> Result<Response, BrokerError> {
     if resp.status().is_success() {
-        return Ok(());
+        return Ok(resp);
     }
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
     Err(BrokerError::Api {
-        status: resp.status().as_u16(),
-        message: resp
-            .status()
-            .canonical_reason()
-            .unwrap_or("unknown")
-            .to_string(),
+        status: status.as_u16(),
+        message: error_message(status.canonical_reason(), &body),
     })
+}
+
+fn error_message(canonical_reason: Option<&str>, body: &str) -> String {
+    #[derive(Deserialize)]
+    struct AlpacaErrorBody {
+        message: Option<String>,
+    }
+
+    serde_json::from_str::<AlpacaErrorBody>(body)
+        .ok()
+        .and_then(|parsed| parsed.message)
+        .or_else(|| {
+            let trimmed = body.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .or_else(|| canonical_reason.map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 // ── Unit tests (mock HTTP) ────────────────────────────────────────────────────
@@ -271,7 +282,25 @@ mod tests {
         let adapter = make_adapter(&server);
         let order = Order::new("AAPL", OrderSide::Buy, 10.0, OrderType::Market);
         let err = adapter.submit_order(&order).unwrap_err();
-        assert!(matches!(err, BrokerError::Api { status: 422, .. }));
+        assert!(matches!(
+            err,
+            BrokerError::Api {
+                status: 422,
+                ref message
+            } if message == "qty is required"
+        ));
+    }
+
+    #[test]
+    fn test_new_uses_paper_endpoint_when_enabled() {
+        let adapter = AlpacaBrokerAdapter::new("key", "secret", true).unwrap();
+        assert_eq!(adapter.base_url, PAPER_BASE_URL);
+    }
+
+    #[test]
+    fn test_new_uses_live_endpoint_when_disabled() {
+        let adapter = AlpacaBrokerAdapter::new("key", "secret", false).unwrap();
+        assert_eq!(adapter.base_url, LIVE_BASE_URL);
     }
 
     // ── get_account ──────────────────────────────────────────────────────────
